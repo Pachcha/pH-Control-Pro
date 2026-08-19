@@ -1,0 +1,19 @@
+{
+  "name": "pH Control Pro",
+  "short_name": "pH Control",
+  "description": "ระบบควบคุม pH น้ำอัตโนมัติ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#020617",
+  "theme_color": "#020617",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%230f172a'/%3E%3Ccircle cx='256' cy='256' r='150' fill='none' stroke='%2310b981' stroke-width='36'/%3E%3Ctext x='256' y='300' font-family='system-ui,sans-serif' font-size='150' font-weight='700' fill='%23f8fafc' text-anchor='middle'%3EpH%3C/text%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#020617">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="pH Control">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
 <title>pH Control Pro</title>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
@@ -16,18 +21,34 @@
   --blue:#3b82f6; --cyan:#06b6d4; --emerald:#10b981;
   --amber:#f59e0b; --red:#ef4444; --violet:#8b5cf6;
   --txt:#f8fafc; --txt-2:#94a3b8; --txt-3:#64748b;
+  --pad:14px;
 }
 *{box-sizing:border-box;margin:0;padding:0;}
 body{
   background:var(--bg); color:var(--txt); min-height:100vh;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Sarabun","Noto Sans Thai",sans-serif;
-  padding:14px; padding-bottom:40px; font-size:15px; line-height:1.5;
+  padding:0 var(--pad);
+  padding-bottom:calc(40px + env(safe-area-inset-bottom));
+  padding-left:max(var(--pad), env(safe-area-inset-left));
+  padding-right:max(var(--pad), env(safe-area-inset-right));
+  font-size:15px; line-height:1.5;
   -webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;  /* กันแถบเทาแวบตอนแตะ */
+  overscroll-behavior-y:contain;
 }
+/* ทุกอย่างที่กดได้ ตัดดีเลย์ 300ms ของเบราว์เซอร์มือถือ */
+.btn,.sw,.toggle{touch-action:manipulation;}
 .wrap{max-width:1200px;margin:0 auto;}
 
 /* ── หัวเรื่อง ── */
-header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px;}
+header{
+  position:sticky; top:0; z-index:30;
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  background:var(--bg);
+  margin:0 calc(var(--pad) * -1) 16px;
+  padding:calc(env(safe-area-inset-top) + 12px) var(--pad) 11px;
+  border-bottom:1px solid var(--line);
+}
 h1{font-size:1.25rem;font-weight:800;letter-spacing:-.02em;}
 h1 small{display:block;font-size:.7rem;font-weight:500;color:var(--txt-3);letter-spacing:.06em;text-transform:uppercase;margin-top:2px;}
 .conn{display:flex;align-items:center;gap:7px;font-size:.78rem;font-weight:600;
@@ -84,14 +105,15 @@ canvas{display:none;width:100%;height:200px;}
 .field label{display:block;font-size:.75rem;color:var(--txt-2);margin-bottom:5px;font-weight:600;}
 input[type=number]{
   width:100%;background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;
-  color:var(--txt);padding:10px 12px;font-size:.95rem;font-family:inherit;font-variant-numeric:tabular-nums;
+  color:var(--txt);padding:12px;font-size:16px;font-family:inherit;font-variant-numeric:tabular-nums;
+  min-height:46px;   /* 16px คือขั้นต่ำที่ iOS ไม่ซูมหน้าจอตอนแตะช่องกรอก */
 }
 input[type=number]:focus{outline:none;border-color:var(--blue);}
 .btn{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
   background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;
-  color:var(--txt);padding:11px 14px;font-size:.85rem;font-weight:700;font-family:inherit;
-  cursor:pointer;width:100%;transition:filter .15s;
+  color:var(--txt);padding:12px 14px;font-size:.88rem;font-weight:700;font-family:inherit;
+  cursor:pointer;width:100%;min-height:46px;transition:filter .15s;
 }
 .btn:hover:not(:disabled){filter:brightness(1.25);}
 .btn:disabled{opacity:.4;cursor:not-allowed;}
@@ -103,7 +125,11 @@ input[type=number]:focus{outline:none;border-color:var(--blue);}
 .btn-row.one{grid-template-columns:1fr;}
 
 /* ── สวิตช์ ── */
-.toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;}
+.toggle{
+  display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:13px 0; min-height:56px; cursor:pointer; user-select:none;
+}
+.toggle:active{opacity:.7;}
 .toggle .lbl{font-size:.88rem;font-weight:600;}
 .toggle .sub{font-size:.72rem;color:var(--txt-3);font-weight:400;margin-top:1px;}
 .sw{position:relative;width:50px;height:28px;flex:none;background:var(--surface-2);
@@ -139,9 +165,22 @@ body.stale .grid{opacity:.5;transition:opacity .3s;}
 footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
 
 @media(max-width:520px){
-  body{padding:11px;font-size:14px;}
-  .gauge{width:190px;height:190px;}
-  .gauge-val{font-size:2.7rem;}
+  :root{--pad:11px;}
+  body{font-size:14px;}
+  h1{font-size:1.05rem;}
+  .conn{font-size:.72rem;padding:6px 11px;}
+  .grid{gap:11px;}
+  .card{padding:14px;border-radius:14px;}
+  .gauge{width:180px;height:180px;}
+  .gauge-val{font-size:2.6rem;}
+  .row{padding:8px 0;}
+
+  /* บนมือถือเอาแผงควบคุมขึ้นมาก่อน จะได้ไม่ต้องเลื่อนยาวกว่าจะถึงปุ่มที่ใช้บ่อย */
+  .grid > .card{order:5;}
+  .grid > .card.m-gauge{order:1;}
+  .grid > .card.m-status{order:2;}
+  .grid > .card.m-control{order:3;}
+  .grid > .card.m-relay{order:4;}
 }
 </style>
 </head>
@@ -164,7 +203,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
 <div class="grid">
 
   <!-- เกจ pH -->
-  <div class="card gauge-card">
+  <div class="card gauge-card m-gauge">
     <div class="card-title">🧪 ค่า pH ปัจจุบัน</div>
     <div class="gauge">
       <svg viewBox="0 0 200 200">
@@ -183,7 +222,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
   </div>
 
   <!-- สถานะการทำงาน -->
-  <div class="card">
+  <div class="card m-status">
     <div class="card-title">⚡ สถานะการทำงาน</div>
     <div class="rows">
       <div class="row"><span class="k">อุณหภูมิน้ำ</span><span class="v" id="tempVal">--</span></div>
@@ -196,7 +235,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
   </div>
 
   <!-- รีเลย์ -->
-  <div class="card">
+  <div class="card m-relay">
     <div class="card-title">🔧 สถานะรีเลย์</div>
     <div class="rows">
       <div class="row"><span class="k">ปั๊ม pH Up</span><span class="v"><span class="pill off" id="rPhUp">ปิด</span></span></div>
@@ -216,7 +255,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
   </div>
 
   <!-- ควบคุม -->
-  <div class="card">
+  <div class="card m-control">
     <div class="card-title">🎛️ ควบคุม</div>
 
     <div class="toggle">
@@ -652,13 +691,14 @@ function send(path, value, logMsg){
 }
 
 function bindSwitch(id, path, label){
-  const el = $(id);
+  const el  = $(id);
+  const row = el.closest(".toggle") || el;   // ให้กดได้ทั้งแถว พื้นที่กดบนมือถือจะพอ
   const fire = () => {
     const next = !el.classList.contains("on");
     setSwitch(el, next);            // ตอบสนองทันที แล้วรอ /status ยืนยันอีกที
     send(path, next, label + (next ? " เปิด" : " ปิด"));
   };
-  el.addEventListener("click", fire);
+  row.addEventListener("click", fire);
   el.addEventListener("keydown", e => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(); }
   });

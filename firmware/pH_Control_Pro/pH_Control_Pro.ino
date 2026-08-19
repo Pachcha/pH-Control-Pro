@@ -971,6 +971,13 @@ bool firebaseUploadReading(const char* path, bool push, float ph, float temp) {
   return ok;
 }
 
+// คีย์นี้ยังไม่มีบน /control ใช่ไหม (อ่านไม่ได้ก็ถือว่ายังไม่มี ปลอดภัยกว่าเดาว่ามี)
+static bool controlKeyMissing(const char* key) {
+  String path = String("/control/") + key;
+  if (!Firebase.RTDB.get(&fbdo, path.c_str())) return true;
+  return fbdo.dataType() == "null";
+}
+
 // เคลียร์ปุ่มค้างและเติมค่าตั้งเริ่มต้น ต้องทำ "ก่อน" เปิด stream
 // ถ้าอุปกรณ์รีบูตตอนที่ /control/phUp ยังเป็น true อยู่ พอ stream เปิดจะสั่งจ่ายสารทันที
 void firebaseSeedControl() {
@@ -981,24 +988,38 @@ void firebaseSeedControl() {
     esp_task_wdt_reset();
   }
 
-  // ถ้ายังไม่เคยมีค่าตั้งบน Firebase ให้เติมจาก EEPROM
-  bool needSeed = true;
-  if (Firebase.RTDB.getFloat(&fbdo, "/control/targetPH")) {
-    if (fbdo.dataType() != "null") needSeed = false;
+  // เติมค่าตั้งเฉพาะคีย์ที่ยังไม่มีบน Firebase
+  // เช็คทีละคีย์ ไม่ใช่เช็คคีย์เดียวแล้วข้ามทั้งก้อน — ถ้า /control ถูกเขียนไว้
+  // บางส่วน (เช่นทดสอบด้วย REST หรือ Rules ปฏิเสธบางคีย์ไป) คีย์ที่เหลือจะหายถาวร
+  int seeded = 0;
+  if (controlKeyMissing("targetPH")) {
+    Firebase.RTDB.setFloat(&fbdo, "/control/targetPH", cfg.targetPH); seeded++;
   }
+  if (controlKeyMissing("phTolerance")) {
+    Firebase.RTDB.setFloat(&fbdo, "/control/phTolerance", cfg.phTolerance); seeded++;
+  }
+  esp_task_wdt_reset();
 
-  if (needSeed) {
-    gJson.clear();
-    gJson.set("targetPH",      (double)cfg.targetPH);
-    gJson.set("phTolerance",   (double)cfg.phTolerance);
-    gJson.set("dosingTimeSec", (int)(cfg.dosingTimeMs / 1000));
-    gJson.set("cooldownSec",   (int)(cfg.cooldownMs / 1000));
-    gJson.set("autoMode",      (bool)cfg.autoMode);
-    gJson.set("emergencyStop", false);
-    Firebase.RTDB.updateNode(&fbdo, "/control", &gJson);
-    gJson.clear();
-    esp_task_wdt_reset();
-    logInfo("เติมค่าตั้งเริ่มต้นลง /control แล้ว");
+  if (controlKeyMissing("dosingTimeSec")) {
+    Firebase.RTDB.setInt(&fbdo, "/control/dosingTimeSec", (int)(cfg.dosingTimeMs / 1000)); seeded++;
+  }
+  if (controlKeyMissing("cooldownSec")) {
+    Firebase.RTDB.setInt(&fbdo, "/control/cooldownSec", (int)(cfg.cooldownMs / 1000)); seeded++;
+  }
+  esp_task_wdt_reset();
+
+  if (controlKeyMissing("autoMode")) {
+    Firebase.RTDB.setBool(&fbdo, "/control/autoMode", (bool)cfg.autoMode); seeded++;
+  }
+  if (controlKeyMissing("emergencyStop")) {
+    Firebase.RTDB.setBool(&fbdo, "/control/emergencyStop", false); seeded++;
+  }
+  esp_task_wdt_reset();
+
+  if (seeded > 0) {
+    char msg[64];
+    snprintf(msg, sizeof(msg), "เติมค่าตั้งที่ขาดลง /control แล้ว %d คีย์", seeded);
+    logInfo(msg);
   }
 
   fbdo.clear();

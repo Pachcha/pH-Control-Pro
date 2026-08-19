@@ -132,6 +132,10 @@ input[type=number]:focus{outline:none;border-color:var(--blue);}
 .setup code{background:#000;padding:2px 7px;border-radius:5px;font-size:.8rem;color:var(--cyan);
   font-family:ui-monospace,Menlo,monospace;word-break:break-all;}
 
+/* ข้อมูลไม่สด (บอร์ดเงียบ/ยังไม่เคยส่ง) — ทำให้จางลงกันอ่านผิดว่าเป็นค่าปัจจุบัน */
+body.stale .grid{opacity:.5;transition:opacity .3s;}
+.grid{transition:opacity .3s;}
+
 footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
 
 @media(max-width:520px){
@@ -309,6 +313,7 @@ const STALE_MS = 120000, MAX_LOG = 60, MAX_POINTS = 60;
 
 const $ = id => document.getElementById(id);
 let db = null, lastStatusAt = 0, phHistory = [], status = {};
+let fbConnected = false;   // เบราว์เซอร์ ↔ Firebase (คนละเรื่องกับบอร์ดออนไลน์)
 
 // ── ยังไม่ได้ใส่ค่าจริง → แสดงวิธีตั้งค่าแล้วหยุด ──
 if (firebaseConfig.apiKey.startsWith("AIzaSyXXXX") || firebaseConfig.databaseURL.includes("ชื่อโปรเจกต์")) {
@@ -483,8 +488,8 @@ function start(){
 
 function attachListeners(){
   db.ref(".info/connected").on("value", s => {
-    if (s.val()) setConn("ok", "เชื่อมต่อแล้ว");
-    else setConn("bad", "ขาดการเชื่อมต่อ");
+    fbConnected = !!s.val();
+    updateLiveState();
   });
 
   db.ref("/status").on("value", s => {
@@ -512,7 +517,8 @@ function attachListeners(){
     if (a && a.message) addLog(a.message, a.priority || 0, a.timestamp);
   });
 
-  setInterval(checkStale, 10000);
+  updateLiveState();
+  setInterval(updateLiveState, 5000);
 }
 
 function renderStatus(d){
@@ -546,7 +552,6 @@ function renderStatus(d){
   $("uptime").textContent = d.uptimeMin != null ? fmtUptime(d.uptimeMin) : "–";
   $("senErr").textContent = (d.sensorErrorCount ?? "–") + " ครั้ง";
   $("fw").textContent     = d.fwVersion || "–";
-  $("lastSeen").textContent = timeNow();
 
   scheduleDraw();                   // เป้าหมายเปลี่ยน แถบบนกราฟต้องขยับตาม
 
@@ -560,12 +565,7 @@ function renderStatus(d){
   fillInput("inDose",   d.dosingTimeSec);
   fillInput("inCool",   d.cooldownConfSec);
 
-  // แถบเตือนตามลำดับความสำคัญ
-  if (d.emergencyStop)      setBanner("err",  "🛑 ระบบอยู่ในโหมดหยุดฉุกเฉิน — ไม่จ่ายสารใดๆ");
-  else if (d.doseLimitHit)  setBanner("err",  "⚠️ จ่ายสารครบลิมิตต่อชั่วโมงแล้ว ระบบปิดโหมดอัตโนมัติเพื่อความปลอดภัย");
-  else if (!d.calibrated)   setBanner("warn", "⚠️ ยังไม่ได้ calibrate เซนเซอร์ pH — ค่าที่อ่านได้ยังใช้ไม่ได้");
-  else if (d.sensorErrorCount > 0) setBanner("warn", "⚠️ เซนเซอร์อ่านพลาด " + d.sensorErrorCount + " ครั้งติดกัน");
-  else setBanner("", "");
+  updateLiveState();   // คุมจุดสถานะ + แถบเตือนไว้ที่เดียว
 }
 
 function fillInput(id, val){
@@ -582,14 +582,65 @@ function fmtUptime(min){
   return m + " นาที";
 }
 
-function checkStale(){
-  if (!lastStatusAt) return;
-  const age = Date.now() - lastStatusAt;
-  if (age > STALE_MS) {
-    setConn("warn", "อุปกรณ์เงียบ " + Math.round(age / 1000) + " วิ");
-    setBanner("warn", "📡 ไม่ได้รับข้อมูลจากอุปกรณ์มา " + Math.round(age / 60000) +
-                      " นาที — อาจไฟดับ WiFi หลุด หรือค้าง");
+function fmtAge(ms){
+  const sec = Math.round(ms / 1000);
+  if (sec < 60)   return sec + " วิ";
+  if (sec < 3600) return Math.round(sec / 60) + " นาที";
+  return Math.round(sec / 3600) + " ชม.";
+}
+
+// จุดสถานะบอก "บอร์ดออนไลน์ไหม" ไม่ใช่ "เบราว์เซอร์ถึง Firebase ไหม"
+// สองอย่างนี้คนละเรื่องกัน — Firebase ติดได้ทั้งที่บอร์ดยังไม่ได้เสียบไฟด้วยซ้ำ
+function updateLiveState(){
+  let live = false;
+
+  if (!fbConnected) {
+    setConn("bad", "ไม่ถึง Firebase");
+  } else if (!lastStatusAt) {
+    setConn("warn", "รอข้อมูลจากบอร์ด");
+  } else {
+    const age = Date.now() - lastStatusAt;
+    if (age > STALE_MS) {
+      setConn("warn", "บอร์ดเงียบ " + fmtAge(age));
+    } else {
+      setConn("ok", "บอร์ดออนไลน์");
+      live = true;
+    }
   }
+
+  // ค่าที่ค้างอยู่บนจอไม่ใช่ค่าปัจจุบันแล้ว ทำให้จางลงเพื่อไม่ให้อ่านผิด
+  document.body.classList.toggle("stale", !live);
+
+  if (lastStatusAt) $("lastSeen").textContent = fmtAge(Date.now() - lastStatusAt) + "ที่แล้ว";
+  refreshBanner();
+}
+
+// แถบเตือนมีที่เดียว เรียงตามลำดับความสำคัญ — ปัญหาการเชื่อมต่อมาก่อนเสมอ
+// เพราะถ้าข้อมูลเก่าแล้ว สถานะที่บอร์ดรายงานไว้ก็เชื่อไม่ได้
+function refreshBanner(){
+  if (!fbConnected)
+    return setBanner("err", "🔌 เครื่องที่เปิดหน้านี้ต่อ Firebase ไม่ได้ — ตรวจอินเทอร์เน็ตของเครื่องคุณเอง");
+
+  if (!lastStatusAt)
+    return setBanner("warn", "⏳ ยังไม่เคยได้รับข้อมูลจากบอร์ดเลย — ตรวจว่าแฟลชเฟิร์มแวร์แล้ว " +
+                             "และดู Serial Monitor ว่าขึ้น \"Firebase พร้อมใช้งาน\" หรือยัง");
+
+  const age = Date.now() - lastStatusAt;
+  if (age > STALE_MS)
+    return setBanner("warn", "📡 ไม่ได้รับข้อมูลจากบอร์ดมา " + fmtAge(age) +
+                             " — อาจไฟดับ WiFi หลุด หรือบอร์ดค้าง");
+
+  const d = status;
+  if (d.emergencyStop)
+    return setBanner("err",  "🛑 ระบบอยู่ในโหมดหยุดฉุกเฉิน — ไม่จ่ายสารใดๆ");
+  if (d.doseLimitHit)
+    return setBanner("err",  "⚠️ จ่ายสารครบลิมิตต่อชั่วโมงแล้ว ระบบปิดโหมดอัตโนมัติเพื่อความปลอดภัย");
+  if (!d.calibrated)
+    return setBanner("warn", "⚠️ ยังไม่ได้ calibrate เซนเซอร์ pH — ค่าที่อ่านได้ยังใช้ไม่ได้");
+  if (d.sensorErrorCount > 0)
+    return setBanner("warn", "⚠️ เซนเซอร์อ่านพลาด " + d.sensorErrorCount + " ครั้งติดกัน");
+
+  setBanner("", "");
 }
 
 // ════════════ เขียนคำสั่งกลับไปที่อุปกรณ์ ════════════

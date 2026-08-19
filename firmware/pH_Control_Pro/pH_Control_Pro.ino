@@ -189,6 +189,8 @@ volatile uint32_t gFbFailCount    = 0;
 
 // ค่าตั้งที่รับมาจาก Dashboard รอนำไปใช้ (stream callback ห้ามบล็อกยาว
 // จึงแค่พักค่าไว้ตรงนี้ แล้วให้ taskControl เอาไปเขียนลง cfg + EEPROM)
+volatile uint32_t gSensorSeq      = 0;    // เพิ่มขึ้น 1 ทุกครั้งที่อ่านเซนเซอร์รอบใหม่
+
 volatile bool  gCfgDirty          = false;
 volatile float gPendingTargetPH   = NAN;
 volatile float gPendingTolerance  = NAN;
@@ -350,6 +352,7 @@ void updateSensorReadings(float ph, float temp) {
   if (xSemaphoreTake(sensorMutex, pdMS_TO_TICKS(1000))) {
     state.currentPH   = ph;
     state.currentTemp = temp;
+    gSensorSeq = gSensorSeq + 1;
     xSemaphoreGive(sensorMutex);
   }
 }
@@ -408,18 +411,26 @@ bool isTargetReached() {
 
 // ค่านิ่งพอที่จะเชื่อถือได้ไหม — ดูส่วนเบี่ยงเบนมาตรฐานของ 5 ค่าล่าสุด
 bool isReadingStable() {
-  static float window[5] = {0};
-  static int   index     = 0;
-  static int   filled    = 0;
+  static float    window[5]  = {0};
+  static int      index      = 0;
+  static int      filled     = 0;
+  static uint32_t lastSeq    = 0;
+  static bool     lastResult = false;
 
   float ph, temp;
   getSensorReadings(&ph, &temp);
-  if (isnan(ph)) return false;
+  if (isnan(ph)) { filled = 0; lastResult = false; return false; }
+
+  // ฟังก์ชันนี้ถูกเรียกถี่กว่าที่เซนเซอร์อ่านค่าจริง ถ้ายัดค่าซ้ำลงหน้าต่าง
+  // ส่วนเบี่ยงเบนจะเกือบศูนย์แล้วตอบว่า "นิ่ง" ทั้งที่ค่ายังไม่เข้าที่
+  uint32_t seq = gSensorSeq;
+  if (seq == lastSeq) return lastResult;
+  lastSeq = seq;
 
   window[index] = ph;
   index = (index + 1) % 5;
   if (filled < 5) filled++;
-  if (filled < 5) return false;
+  if (filled < 5) { lastResult = false; return false; }
 
   float mean = 0;
   for (int i = 0; i < 5; i++) mean += window[i];
@@ -428,7 +439,8 @@ bool isReadingStable() {
   float variance = 0;
   for (int i = 0; i < 5; i++) variance += pow(window[i] - mean, 2);
 
-  return sqrt(variance / 5.0) < 0.1;
+  lastResult = sqrt(variance / 5.0) < 0.1;
+  return lastResult;
 }
 
 // ── ตัวนับจำนวนครั้งที่จ่ายสารต่อชั่วโมง ──
@@ -939,7 +951,8 @@ bool firebaseUploadStatus() {
   gJson.clear();
   fbdo.clear();
 
-  if (ok) gFbSendCount++; else gFbFailCount++;
+  if (ok) gFbSendCount = gFbSendCount + 1;
+  else    gFbFailCount = gFbFailCount + 1;
   return ok;
 }
 
@@ -984,6 +997,7 @@ void firebaseSeedControl() {
     gJson.set("emergencyStop", false);
     Firebase.RTDB.updateNode(&fbdo, "/control", &gJson);
     gJson.clear();
+    esp_task_wdt_reset();
     logInfo("เติมค่าตั้งเริ่มต้นลง /control แล้ว");
   }
 

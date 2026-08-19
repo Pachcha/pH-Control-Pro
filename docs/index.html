@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#020617">
+<title>pH Control Pro</title>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+<style>
+/* ใช้ฟอนต์ของระบบทั้งหมด ไม่ดึง CDN — เปิดในวงแลนที่ไม่มีเน็ตก็ยังอ่านออก */
+:root{
+  --bg:#020617; --surface:#0f172a; --surface-2:#1e293b;
+  --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.13);
+  --blue:#3b82f6; --cyan:#06b6d4; --emerald:#10b981;
+  --amber:#f59e0b; --red:#ef4444; --violet:#8b5cf6;
+  --txt:#f8fafc; --txt-2:#94a3b8; --txt-3:#64748b;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  background:var(--bg); color:var(--txt); min-height:100vh;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Sarabun","Noto Sans Thai",sans-serif;
+  padding:14px; padding-bottom:40px; font-size:15px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1200px;margin:0 auto;}
+
+/* ── หัวเรื่อง ── */
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px;}
+h1{font-size:1.25rem;font-weight:800;letter-spacing:-.02em;}
+h1 small{display:block;font-size:.7rem;font-weight:500;color:var(--txt-3);letter-spacing:.06em;text-transform:uppercase;margin-top:2px;}
+.conn{display:flex;align-items:center;gap:7px;font-size:.78rem;font-weight:600;
+  background:var(--surface);border:1px solid var(--line);border-radius:99px;padding:6px 13px;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--txt-3);flex:none;}
+.dot.ok{background:var(--emerald);box-shadow:0 0 8px var(--emerald);}
+.dot.bad{background:var(--red);box-shadow:0 0 8px var(--red);}
+.dot.warn{background:var(--amber);box-shadow:0 0 8px var(--amber);}
+
+/* ── แถบแจ้งเตือนด้านบน ── */
+.banner{display:none;border-radius:12px;padding:12px 15px;margin-bottom:14px;font-size:.86rem;font-weight:600;border:1px solid;}
+.banner.show{display:block;}
+.banner.err{background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.4);color:#fca5a5;}
+.banner.warn{background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.4);color:#fcd34d;}
+
+/* ── การ์ด ── */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:17px;}
+.card.wide{grid-column:1/-1;}
+.card-title{display:flex;align-items:center;gap:7px;font-size:.72rem;font-weight:700;
+  color:var(--txt-3);letter-spacing:.5px;margin-bottom:14px;}
+
+/* ── เกจ pH ── */
+.gauge-card{display:flex;flex-direction:column;align-items:center;}
+.gauge{position:relative;width:220px;height:220px;}
+.gauge svg{transform:rotate(-90deg);width:100%;height:100%;}
+.gauge-mid{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;}
+.gauge-val{font-size:3.2rem;font-weight:800;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums;}
+.gauge-unit{font-size:.75rem;color:var(--txt-3);letter-spacing:1.5px;margin-top:6px;}
+.gauge-target{font-size:.8rem;color:var(--txt-2);margin-top:10px;}
+
+/* ── แถวข้อมูล ── */
+.rows{display:flex;flex-direction:column;gap:1px;}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line);font-size:.87rem;}
+.row:last-child{border-bottom:none;}
+.row .k{color:var(--txt-2);}
+.row .v{font-weight:700;font-variant-numeric:tabular-nums;text-align:right;}
+
+/* ── ป้ายสถานะ ── */
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:.72rem;font-weight:700;
+  padding:3px 10px;border-radius:99px;border:1px solid var(--line-2);background:var(--surface-2);}
+.pill.on{background:rgba(16,185,129,.15);border-color:rgba(16,185,129,.4);color:#6ee7b7;}
+.pill.off{background:rgba(100,116,139,.12);color:var(--txt-3);}
+.pill.alert{background:rgba(239,68,68,.15);border-color:rgba(239,68,68,.4);color:#fca5a5;}
+.pill.warn{background:rgba(245,158,11,.15);border-color:rgba(245,158,11,.4);color:#fcd34d;}
+
+/* ── กราฟ ── */
+.chart-wrap{width:100%;overflow-x:auto;}
+canvas{display:none;width:100%;height:200px;}
+.chart-empty{color:var(--txt-3);font-size:.85rem;text-align:center;padding:26px 0;}
+
+/* ── ฟอร์ม / ปุ่ม ── */
+.field{margin-bottom:13px;}
+.field label{display:block;font-size:.75rem;color:var(--txt-2);margin-bottom:5px;font-weight:600;}
+input[type=number]{
+  width:100%;background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;
+  color:var(--txt);padding:10px 12px;font-size:.95rem;font-family:inherit;font-variant-numeric:tabular-nums;
+}
+input[type=number]:focus{outline:none;border-color:var(--blue);}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  background:var(--surface-2);border:1px solid var(--line-2);border-radius:10px;
+  color:var(--txt);padding:11px 14px;font-size:.85rem;font-weight:700;font-family:inherit;
+  cursor:pointer;width:100%;transition:filter .15s;
+}
+.btn:hover:not(:disabled){filter:brightness(1.25);}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.btn.blue{background:var(--blue);border-color:var(--blue);}
+.btn.violet{background:var(--violet);border-color:var(--violet);}
+.btn.red{background:var(--red);border-color:var(--red);}
+.btn.amber{background:var(--amber);border-color:var(--amber);color:#1c1917;}
+.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px;}
+.btn-row.one{grid-template-columns:1fr;}
+
+/* ── สวิตช์ ── */
+.toggle{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;}
+.toggle .lbl{font-size:.88rem;font-weight:600;}
+.toggle .sub{font-size:.72rem;color:var(--txt-3);font-weight:400;margin-top:1px;}
+.sw{position:relative;width:50px;height:28px;flex:none;background:var(--surface-2);
+  border:1px solid var(--line-2);border-radius:99px;cursor:pointer;transition:background .2s;}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;
+  border-radius:50%;background:var(--txt-3);transition:transform .2s,background .2s;}
+.sw.on{background:var(--emerald);border-color:var(--emerald);}
+.sw.on::after{transform:translateX(22px);background:#fff;}
+.sw.danger.on{background:var(--red);border-color:var(--red);}
+.sw[aria-disabled=true]{opacity:.4;pointer-events:none;}
+
+/* ── Log ── */
+.log{background:#000;border:1px solid var(--line);border-radius:12px;padding:11px;
+  max-height:260px;overflow-y:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.74rem;}
+.log-line{display:flex;gap:9px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04);}
+.log-line:last-child{border-bottom:none;}
+.log-time{color:var(--txt-3);flex:none;}
+.log-msg{color:var(--txt-2);word-break:break-word;}
+.log-line.p1 .log-msg{color:#fcd34d;}
+.log-line.p2 .log-msg{color:#fca5a5;}
+
+/* ── ตั้งค่าไม่ครบ ── */
+.setup{background:var(--surface);border:1px solid rgba(245,158,11,.4);border-radius:16px;padding:20px;margin-bottom:16px;}
+.setup h2{font-size:1rem;margin-bottom:10px;color:#fcd34d;}
+.setup p{font-size:.85rem;color:var(--txt-2);margin-bottom:8px;}
+.setup code{background:#000;padding:2px 7px;border-radius:5px;font-size:.8rem;color:var(--cyan);
+  font-family:ui-monospace,Menlo,monospace;word-break:break-all;}
+
+footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
+
+@media(max-width:520px){
+  body{padding:11px;font-size:14px;}
+  .gauge{width:190px;height:190px;}
+  .gauge-val{font-size:2.7rem;}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>pH Control Pro<small>ระบบควบคุม pH อัตโนมัติ</small></h1>
+  <div class="conn"><span class="dot" id="connDot"></span><span id="connTxt">กำลังเชื่อมต่อ…</span></div>
+</header>
+
+<div class="setup" id="setupBox" style="display:none">
+  <h2>⚙️ ยังไม่ได้ตั้งค่า Firebase</h2>
+  <p>เปิดไฟล์ <code>docs/index.html</code> แล้วแก้ค่าในบล็อก <code>firebaseConfig</code> ให้เป็นค่าจริงจาก Firebase Console ของคุณ</p>
+  <p>ดูขั้นตอนละเอียดได้ที่ <code>README.md</code> หัวข้อ "ตั้งค่า Firebase"</p>
+</div>
+
+<div class="banner" id="banner"></div>
+
+<div class="grid">
+
+  <!-- เกจ pH -->
+  <div class="card gauge-card">
+    <div class="card-title">🧪 ค่า pH ปัจจุบัน</div>
+    <div class="gauge">
+      <svg viewBox="0 0 200 200">
+        <circle cx="100" cy="100" r="85" fill="none" stroke="var(--surface-2)" stroke-width="14"/>
+        <circle cx="100" cy="100" r="85" fill="none" stroke="var(--emerald)" stroke-width="14"
+                stroke-linecap="round" id="gaugeArc"
+                stroke-dasharray="534" stroke-dashoffset="534"
+                style="transition:stroke-dashoffset .6s ease,stroke .4s ease"/>
+      </svg>
+      <div class="gauge-mid">
+        <div class="gauge-val" id="phVal">--</div>
+        <div class="gauge-unit">pH</div>
+      </div>
+    </div>
+    <div class="gauge-target" id="phTargetTxt">เป้าหมาย – –</div>
+  </div>
+
+  <!-- สถานะการทำงาน -->
+  <div class="card">
+    <div class="card-title">⚡ สถานะการทำงาน</div>
+    <div class="rows">
+      <div class="row"><span class="k">อุณหภูมิน้ำ</span><span class="v" id="tempVal">--</span></div>
+      <div class="row"><span class="k">โหมด</span><span class="v"><span class="pill off" id="modePill">–</span></span></div>
+      <div class="row"><span class="k">กำลังจ่ายสาร</span><span class="v"><span class="pill off" id="dosePill">–</span></span></div>
+      <div class="row"><span class="k">คำสั่งล่าสุด</span><span class="v" id="lastAction">–</span></div>
+      <div class="row"><span class="k">พักก่อนจ่ายรอบถัดไป</span><span class="v" id="cooldown">–</span></div>
+      <div class="row"><span class="k">จ่ายไปแล้วชั่วโมงนี้</span><span class="v" id="doseCount">–</span></div>
+    </div>
+  </div>
+
+  <!-- รีเลย์ -->
+  <div class="card">
+    <div class="card-title">🔧 สถานะรีเลย์</div>
+    <div class="rows">
+      <div class="row"><span class="k">ปั๊ม pH Up</span><span class="v"><span class="pill off" id="rPhUp">ปิด</span></span></div>
+      <div class="row"><span class="k">ปั๊ม pH Down</span><span class="v"><span class="pill off" id="rPhDown">ปิด</span></span></div>
+      <div class="row"><span class="k">เครื่องกวน</span><span class="v"><span class="pill off" id="rMixer">ปิด</span></span></div>
+      <div class="row"><span class="k">Calibration</span><span class="v"><span class="pill off" id="calibPill">–</span></span></div>
+      <div class="row"><span class="k">ความแม่น (R²)</span><span class="v" id="r2Val">–</span></div>
+      <div class="row"><span class="k">calibrate มาแล้ว</span><span class="v" id="calibCount">–</span></div>
+    </div>
+  </div>
+
+  <!-- กราฟ -->
+  <div class="card wide">
+    <div class="card-title">📊 แนวโน้มค่า pH</div>
+    <div class="chart-wrap"><canvas id="chart"></canvas></div>
+    <div class="chart-empty" id="chartEmpty">ยังไม่มีข้อมูลย้อนหลัง</div>
+  </div>
+
+  <!-- ควบคุม -->
+  <div class="card">
+    <div class="card-title">🎛️ ควบคุม</div>
+
+    <div class="toggle">
+      <div><div class="lbl">โหมดอัตโนมัติ</div><div class="sub">ให้ระบบคุม pH เอง</div></div>
+      <div class="sw" id="swAuto" role="switch" tabindex="0"></div>
+    </div>
+    <div class="toggle" style="border-top:1px solid var(--line)">
+      <div><div class="lbl">เครื่องกวน</div><div class="sub">สั่งเปิด/ปิดด้วยมือ</div></div>
+      <div class="sw" id="swMixer" role="switch" tabindex="0"></div>
+    </div>
+    <div class="toggle" style="border-top:1px solid var(--line)">
+      <div><div class="lbl">หยุดฉุกเฉิน</div><div class="sub">ตัดการจ่ายสารทั้งหมด</div></div>
+      <div class="sw danger" id="swEstop" role="switch" tabindex="0"></div>
+    </div>
+
+    <div class="btn-row" style="margin-top:14px">
+      <button class="btn blue"   id="btnUp">▲ จ่าย pH Up</button>
+      <button class="btn blue"   id="btnDown">▼ จ่าย pH Down</button>
+    </div>
+    <div class="btn-row">
+      <button class="btn violet" id="btnCalib">🎯 Calibrate</button>
+      <button class="btn red"    id="btnReboot">⟳ รีบูต</button>
+    </div>
+  </div>
+
+  <!-- ตั้งค่า -->
+  <div class="card">
+    <div class="card-title">⚙️ ค่าตั้ง</div>
+    <div class="field">
+      <label for="inTarget">เป้าหมาย pH (3.0 – 11.0)</label>
+      <input type="number" id="inTarget" step="0.1" min="3" max="11">
+    </div>
+    <div class="field">
+      <label for="inTol">ช่วงยอมรับ ± (0.05 – 2.0)</label>
+      <input type="number" id="inTol" step="0.05" min="0.05" max="2">
+    </div>
+    <div class="field">
+      <label for="inDose">เวลาจ่ายสารต่อครั้ง (1 – 60 วินาที)</label>
+      <input type="number" id="inDose" step="1" min="1" max="60">
+    </div>
+    <div class="field">
+      <label for="inCool">พักระหว่างจ่าย (30 – 3600 วินาที)</label>
+      <input type="number" id="inCool" step="10" min="30" max="3600">
+    </div>
+    <button class="btn amber" id="btnSave">💾 บันทึกค่าตั้ง</button>
+  </div>
+
+  <!-- อุปกรณ์ -->
+  <div class="card wide">
+    <div class="card-title">🖥️ อุปกรณ์</div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:0 18px">
+      <div class="rows">
+        <div class="row"><span class="k">สัญญาณ WiFi</span><span class="v" id="rssi">–</span></div>
+        <div class="row"><span class="k">หน่วยความจำว่าง</span><span class="v" id="heap">–</span></div>
+      </div>
+      <div class="rows">
+        <div class="row"><span class="k">เปิดเครื่องมาแล้ว</span><span class="v" id="uptime">–</span></div>
+        <div class="row"><span class="k">เซนเซอร์อ่านพลาด</span><span class="v" id="senErr">–</span></div>
+      </div>
+      <div class="rows">
+        <div class="row"><span class="k">เฟิร์มแวร์</span><span class="v" id="fw">–</span></div>
+        <div class="row"><span class="k">อัปเดตล่าสุด</span><span class="v" id="lastSeen">–</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- log -->
+  <div class="card wide">
+    <div class="card-title">📋 บันทึกเหตุการณ์</div>
+    <div class="log" id="log">
+      <div class="log-line" id="logPlaceholder"><span class="log-time">--:--:--</span><span class="log-msg">กำลังเชื่อมต่อ Firebase…</span></div>
+    </div>
+  </div>
+
+</div>
+
+<footer>pH Control Pro • ESP32 + Firebase Realtime Database</footer>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+//  ★ แก้ 2 บรรทัดนี้ให้เป็นค่าจริงของโปรเจกต์คุณ (ดู README หัวข้อ "ตั้งค่า Firebase")
+// ════════════════════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey:      "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  databaseURL: "https://ชื่อโปรเจกต์-default-rtdb.asia-southeast1.firebasedatabase.app"
+};
+// ════════════════════════════════════════════════════════════════════
+
+const PH_MIN = 0, PH_MAX = 14, GAUGE_C = 2 * Math.PI * 85;
+const STALE_MS = 120000, MAX_LOG = 60, MAX_POINTS = 60;
+
+const $ = id => document.getElementById(id);
+let db = null, lastStatusAt = 0, phHistory = [], status = {};
+
+// ── ยังไม่ได้ใส่ค่าจริง → แสดงวิธีตั้งค่าแล้วหยุด ──
+if (firebaseConfig.apiKey.startsWith("AIzaSyXXXX") || firebaseConfig.databaseURL.includes("ชื่อโปรเจกต์")) {
+  $("setupBox").style.display = "block";
+  setConn("bad", "ยังไม่ได้ตั้งค่า");
+  addLog("ยังไม่ได้ใส่ apiKey / databaseURL ในไฟล์นี้", 1);
+} else {
+  if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+  db = firebase.database();
+  start();
+}
+
+// ════════════ ตัวช่วย UI ════════════
+function setConn(cls, txt){
+  $("connDot").className = "dot " + cls;
+  $("connTxt").textContent = txt;
+}
+
+function setBanner(type, txt){
+  const b = $("banner");
+  if (!txt) { b.className = "banner"; return; }
+  b.className = "banner show " + type;
+  b.textContent = txt;
+}
+
+function setPill(el, on, onTxt, offTxt, onCls){
+  el.className = "pill " + (on ? (onCls || "on") : "off");
+  el.textContent = on ? onTxt : offTxt;
+}
+
+function setSwitch(el, on){ el.classList.toggle("on", !!on); }
+
+function fmt(v, digits, suffix){
+  if (v === undefined || v === null || Number.isNaN(v)) return "–";
+  return Number(v).toFixed(digits) + (suffix || "");
+}
+
+function timeNow(){
+  return new Date().toLocaleTimeString("th-TH", {hour12:false});
+}
+
+function addLog(msg, priority, tsMs){
+  const box = $("log");
+  const ph = $("logPlaceholder");
+  if (ph) ph.remove();
+
+  const line = document.createElement("div");
+  line.className = "log-line p" + (priority || 0);
+  const t = tsMs ? new Date(tsMs).toLocaleTimeString("th-TH", {hour12:false}) : timeNow();
+  line.innerHTML = '<span class="log-time"></span><span class="log-msg"></span>';
+  line.children[0].textContent = t;
+  line.children[1].textContent = msg;
+
+  box.insertBefore(line, box.firstChild);
+  while (box.children.length > MAX_LOG) box.removeChild(box.lastChild);
+}
+
+// ════════════ เกจ pH ════════════
+function phColor(ph, target, tol){
+  if (ph === null) return "var(--txt-3)";
+  const d = Math.abs(ph - target);
+  if (d <= tol) return "var(--emerald)";
+  if (d <= tol * 2.5) return "var(--amber)";
+  return "var(--red)";
+}
+
+function updateGauge(ph, target, tol){
+  const arc = $("gaugeArc");
+  if (ph === null) {
+    $("phVal").textContent = "--";
+    arc.style.strokeDashoffset = GAUGE_C;
+    arc.style.stroke = "var(--txt-3)";
+    return;
+  }
+  const pct = Math.min(1, Math.max(0, (ph - PH_MIN) / (PH_MAX - PH_MIN)));
+  arc.style.strokeDashoffset = GAUGE_C * (1 - pct);
+  arc.style.stroke = phColor(ph, target, tol);
+  $("phVal").textContent = ph.toFixed(2);
+  $("phVal").style.color = phColor(ph, target, tol);
+}
+
+// ════════════ กราฟ (วาดเองด้วย canvas ไม่ใช้ไลบรารีนอก) ════════════
+let drawQueued = false;
+function scheduleDraw(){
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(() => { drawQueued = false; drawChart(); });
+}
+window.addEventListener("resize", scheduleDraw);
+
+function drawChart(){
+  const cv = $("chart");
+  const empty = $("chartEmpty");
+
+  if (phHistory.length < 2) { cv.style.display = "none"; empty.style.display = "block"; return; }
+  cv.style.display = "block"; empty.style.display = "none";
+
+  const dpr = window.devicePixelRatio || 1;
+  const W = Math.round(cv.clientWidth), H = 200;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const c = cv.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, W, H);
+
+  const padL = 34, padR = 10, padT = 12, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const vals = phHistory.map(p => p.ph);
+  const target = Number(status.targetPH) || 7;
+  const tol = Number(status.phTolerance) || 0.3;
+
+  let lo = Math.min(...vals, target - tol), hi = Math.max(...vals, target + tol);
+  const pad = Math.max(0.3, (hi - lo) * 0.15);
+  lo -= pad; hi += pad;
+  if (hi - lo < 0.5) { const m = (hi + lo) / 2; lo = m - 0.25; hi = m + 0.25; }
+
+  const X = i => padL + (plotW * i) / (phHistory.length - 1);
+  const Y = v => padT + plotH * (1 - (v - lo) / (hi - lo));
+
+  // เส้นกริด + ป้ายแกน Y
+  c.font = "10px ui-monospace,Menlo,monospace";
+  c.textAlign = "right"; c.textBaseline = "middle";
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + ((hi - lo) * i) / 4, y = Y(v);
+    c.strokeStyle = "rgba(255,255,255,.06)";
+    c.beginPath(); c.moveTo(padL, y); c.lineTo(W - padR, y); c.stroke();
+    c.fillStyle = "#64748b";
+    c.fillText(v.toFixed(1), padL - 6, y);
+  }
+
+  // แถบช่วงเป้าหมาย
+  const yTop = Y(target + tol), yBot = Y(target - tol);
+  c.fillStyle = "rgba(16,185,129,.10)";
+  c.fillRect(padL, yTop, plotW, Math.max(1, yBot - yTop));
+  c.strokeStyle = "rgba(16,185,129,.45)";
+  c.setLineDash([4, 4]);
+  c.beginPath(); c.moveTo(padL, Y(target)); c.lineTo(W - padR, Y(target)); c.stroke();
+  c.setLineDash([]);
+
+  // เส้นข้อมูล
+  c.strokeStyle = "#3b82f6"; c.lineWidth = 2;
+  c.lineJoin = "round"; c.lineCap = "round";
+  c.beginPath();
+  phHistory.forEach((p, i) => i ? c.lineTo(X(i), Y(p.ph)) : c.moveTo(X(i), Y(p.ph)));
+  c.stroke();
+
+  // จุดสุดท้าย
+  const last = phHistory[phHistory.length - 1];
+  c.fillStyle = "#3b82f6";
+  c.beginPath(); c.arc(X(phHistory.length - 1), Y(last.ph), 3.5, 0, Math.PI * 2); c.fill();
+
+  // ป้ายเวลาแกน X
+  c.textAlign = "left"; c.textBaseline = "top"; c.fillStyle = "#64748b";
+  const fmtT = ms => new Date(ms).toLocaleTimeString("th-TH", {hour:"2-digit", minute:"2-digit", hour12:false});
+  if (phHistory[0].t) c.fillText(fmtT(phHistory[0].t), padL, H - padB + 6);
+  if (last.t) { c.textAlign = "right"; c.fillText(fmtT(last.t), W - padR, H - padB + 6); }
+}
+
+// ════════════ อ่านข้อมูลจาก Firebase ════════════
+function start(){
+  setConn("warn", "กำลังเข้าสู่ระบบ…");
+
+  firebase.auth().signInAnonymously()
+    .then(() => { addLog("เข้าสู่ระบบสำเร็จ", 0); attachListeners(); })
+    .catch(err => {
+      setConn("bad", "เข้าสู่ระบบไม่ได้");
+      setBanner("err", "เข้าสู่ระบบไม่สำเร็จ: " + err.code +
+                " — ตรวจว่าเปิด Anonymous sign-in ใน Firebase Console > Authentication แล้วหรือยัง");
+      addLog("auth error: " + err.message, 2);
+    });
+}
+
+function attachListeners(){
+  db.ref(".info/connected").on("value", s => {
+    if (s.val()) setConn("ok", "เชื่อมต่อแล้ว");
+    else setConn("bad", "ขาดการเชื่อมต่อ");
+  });
+
+  db.ref("/status").on("value", s => {
+    const d = s.val();
+    if (!d) return;
+    lastStatusAt = Date.now();
+    renderStatus(d);
+  }, err => {
+    setBanner("err", "อ่าน /status ไม่ได้: " + err.message + " — ตรวจ Database Rules");
+    addLog("status error: " + err.message, 2);
+  });
+
+  db.ref("/history").limitToLast(MAX_POINTS).on("value", s => {
+    const out = [];
+    s.forEach(ch => {
+      const v = ch.val();
+      if (v && typeof v.ph === "number" && v.ph >= 0) out.push({ph: v.ph, t: v.timestamp || 0});
+    });
+    phHistory = out;
+    scheduleDraw();
+  });
+
+  db.ref("/alerts").limitToLast(30).on("child_added", s => {
+    const a = s.val();
+    if (a && a.message) addLog(a.message, a.priority || 0, a.timestamp);
+  });
+
+  setInterval(checkStale, 10000);
+}
+
+function renderStatus(d){
+  status = d;                       // drawChart() อ่านเป้าหมาย/ช่วงยอมรับจากตรงนี้
+  const ph     = d.phValid && d.ph >= 0 ? Number(d.ph) : null;
+  const target = Number(d.targetPH);
+  const tol    = Number(d.phTolerance);
+
+  updateGauge(ph, target, tol);
+  $("phTargetTxt").textContent = "เป้าหมาย " + fmt(target, 2) + "  ±" + fmt(tol, 2);
+
+  $("tempVal").textContent = (d.temp > -100) ? fmt(d.temp, 1, " °C") : "–";
+  setPill($("modePill"), !!d.autoMode, "อัตโนมัติ", "สั่งมือ");
+  setPill($("dosePill"), !!d.dosing, d.lastAction || "กำลังจ่าย", "ไม่ได้จ่าย");
+  $("lastAction").textContent = d.lastAction || "–";
+  $("cooldown").textContent   = d.cooldownSec > 0 ? d.cooldownSec + " วินาที" : "พร้อมจ่าย";
+  $("doseCount").textContent  = (d.dosesThisHour ?? "–") + " / " + (d.maxDosesPerHour ?? "–") + " ครั้ง";
+
+  setPill($("rPhUp"),   !!d.phUp,   "เปิด", "ปิด");
+  setPill($("rPhDown"), !!d.phDown, "เปิด", "ปิด");
+  setPill($("rMixer"),  !!d.mixer,  "เปิด", "ปิด");
+
+  if (d.calibMode) setPill($("calibPill"), true, "กำลัง calibrate ขั้น " + d.calibStep + "/3", "", "warn");
+  else setPill($("calibPill"), !!d.calibrated, "ผ่านแล้ว", "ยังไม่ calibrate", d.calibrated ? "on" : "alert");
+
+  $("r2Val").textContent      = d.calibrated ? fmt(d.phR2, 1, " %") : "–";
+  $("calibCount").textContent = (d.calibCount ?? "–") + " ครั้ง";
+
+  $("rssi").textContent   = (d.wifiRSSI ?? "–") + " dBm";
+  $("heap").textContent   = d.freeHeap ? Math.round(d.freeHeap / 1024) + " KB" : "–";
+  $("uptime").textContent = d.uptimeMin != null ? fmtUptime(d.uptimeMin) : "–";
+  $("senErr").textContent = (d.sensorErrorCount ?? "–") + " ครั้ง";
+  $("fw").textContent     = d.fwVersion || "–";
+  $("lastSeen").textContent = timeNow();
+
+  scheduleDraw();                   // เป้าหมายเปลี่ยน แถบบนกราฟต้องขยับตาม
+
+  setSwitch($("swAuto"),  d.autoMode);
+  setSwitch($("swMixer"), d.mixer);
+  setSwitch($("swEstop"), d.emergencyStop);
+
+  // เติมค่าลงช่องกรอกเฉพาะตอนที่ผู้ใช้ไม่ได้กำลังพิมพ์อยู่
+  fillInput("inTarget", d.targetPH);
+  fillInput("inTol",    d.phTolerance);
+  fillInput("inDose",   d.dosingTimeSec);
+  fillInput("inCool",   d.cooldownConfSec);
+
+  // แถบเตือนตามลำดับความสำคัญ
+  if (d.emergencyStop)      setBanner("err",  "🛑 ระบบอยู่ในโหมดหยุดฉุกเฉิน — ไม่จ่ายสารใดๆ");
+  else if (d.doseLimitHit)  setBanner("err",  "⚠️ จ่ายสารครบลิมิตต่อชั่วโมงแล้ว ระบบปิดโหมดอัตโนมัติเพื่อความปลอดภัย");
+  else if (!d.calibrated)   setBanner("warn", "⚠️ ยังไม่ได้ calibrate เซนเซอร์ pH — ค่าที่อ่านได้ยังใช้ไม่ได้");
+  else if (d.sensorErrorCount > 0) setBanner("warn", "⚠️ เซนเซอร์อ่านพลาด " + d.sensorErrorCount + " ครั้งติดกัน");
+  else setBanner("", "");
+}
+
+function fillInput(id, val){
+  const el = $(id);
+  if (val === undefined || val === null) return;
+  if (document.activeElement === el) return;
+  el.value = val;
+}
+
+function fmtUptime(min){
+  const d = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60), m = min % 60;
+  if (d) return d + " วัน " + h + " ชม.";
+  if (h) return h + " ชม. " + m + " นาที";
+  return m + " นาที";
+}
+
+function checkStale(){
+  if (!lastStatusAt) return;
+  const age = Date.now() - lastStatusAt;
+  if (age > STALE_MS) {
+    setConn("warn", "อุปกรณ์เงียบ " + Math.round(age / 1000) + " วิ");
+    setBanner("warn", "📡 ไม่ได้รับข้อมูลจากอุปกรณ์มา " + Math.round(age / 60000) +
+                      " นาที — อาจไฟดับ WiFi หลุด หรือค้าง");
+  }
+}
+
+// ════════════ เขียนคำสั่งกลับไปที่อุปกรณ์ ════════════
+function send(path, value, logMsg){
+  if (!db) return;
+  db.ref("/control/" + path).set(value)
+    .then(() => { if (logMsg) addLog(logMsg, 0); })
+    .catch(err => { addLog("ส่งคำสั่งไม่สำเร็จ: " + err.message, 2); });
+}
+
+function bindSwitch(id, path, label){
+  const el = $(id);
+  const fire = () => {
+    const next = !el.classList.contains("on");
+    setSwitch(el, next);            // ตอบสนองทันที แล้วรอ /status ยืนยันอีกที
+    send(path, next, label + (next ? " เปิด" : " ปิด"));
+  };
+  el.addEventListener("click", fire);
+  el.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fire(); }
+  });
+}
+
+bindSwitch("swAuto",  "autoMode",      "โหมดอัตโนมัติ");
+bindSwitch("swMixer", "mixer",         "เครื่องกวน");
+bindSwitch("swEstop", "emergencyStop", "หยุดฉุกเฉิน");
+
+// ปุ่มกดครั้งเดียว — ฝั่ง ESP32 จะเขียน false กลับให้เองหลังทำงานเสร็จ
+function bindButton(id, path, confirmMsg, logMsg){
+  $(id).addEventListener("click", () => {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    send(path, true, logMsg);
+  });
+}
+
+bindButton("btnUp",     "phUp",       "สั่งจ่าย pH Up ทันทีเลยไหม?",   "สั่งจ่าย pH Up");
+bindButton("btnDown",   "phDown",     "สั่งจ่าย pH Down ทันทีเลยไหม?", "สั่งจ่าย pH Down");
+bindButton("btnCalib",  "startCalib",
+  "เริ่ม calibrate 3 จุด?\n\nเตรียมน้ำยา buffer pH 4.01 / 6.86 / 9.18 ไว้ให้พร้อม\nแต่ละขั้นกดปุ่ม BOOT ที่บอร์ดเพื่อเก็บค่า (หรือรอ 45 วินาที)",
+  "สั่งเริ่ม calibrate");
+bindButton("btnReboot", "reboot",     "รีบูตอุปกรณ์เลยไหม?",           "สั่งรีบูตอุปกรณ์");
+
+// บันทึกค่าตั้ง
+$("btnSave").addEventListener("click", () => {
+  if (!db) return;
+
+  const target = parseFloat($("inTarget").value);
+  const tol    = parseFloat($("inTol").value);
+  const dose   = parseInt($("inDose").value, 10);
+  const cool   = parseInt($("inCool").value, 10);
+
+  if (!(target >= 3 && target <= 11))   return alert("เป้าหมาย pH ต้องอยู่ระหว่าง 3.0 – 11.0");
+  if (!(tol >= 0.05 && tol <= 2))       return alert("ช่วงยอมรับต้องอยู่ระหว่าง 0.05 – 2.0");
+  if (!(dose >= 1 && dose <= 60))       return alert("เวลาจ่ายสารต้องอยู่ระหว่าง 1 – 60 วินาที");
+  if (!(cool >= 30 && cool <= 3600))    return alert("เวลาพักต้องอยู่ระหว่าง 30 – 3600 วินาที");
+
+  db.ref("/control").update({
+    targetPH: target, phTolerance: tol, dosingTimeSec: dose, cooldownSec: cool
+  })
+  .then(() => addLog("บันทึกค่าตั้งใหม่แล้ว", 0))
+  .catch(err => addLog("บันทึกไม่สำเร็จ: " + err.message, 2));
+});
+</script>
+</body>
+</html>

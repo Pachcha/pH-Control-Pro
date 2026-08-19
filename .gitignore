@@ -1,0 +1,20 @@
+# ★ ห้าม commit — มีรหัส WiFi และคีย์ Firebase จริง
+firmware/pH_Control_Pro/secrets.h
+
+# Arduino build
+build/
+*.bin
+*.elf
+*.map
+*.hex
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,38 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": false,
+
+    "status":      { ".write": "auth != null" },
+    "lastReading": { ".write": "auth != null" },
+
+    "history": {
+      ".write": "auth != null",
+      ".indexOn": ["timestamp"]
+    },
+
+    "alerts": {
+      ".write": "auth != null",
+      ".indexOn": ["timestamp"]
+    },
+
+    "control": {
+      ".write": "auth != null",
+
+      "targetPH":      { ".validate": "newData.isNumber() && newData.val() >= 3 && newData.val() <= 11" },
+      "phTolerance":   { ".validate": "newData.isNumber() && newData.val() >= 0.05 && newData.val() <= 2" },
+      "dosingTimeSec": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 60" },
+      "cooldownSec":   { ".validate": "newData.isNumber() && newData.val() >= 30 && newData.val() <= 3600" },
+
+      "autoMode":      { ".validate": "newData.isBoolean()" },
+      "phUp":          { ".validate": "newData.isBoolean()" },
+      "phDown":        { ".validate": "newData.isBoolean()" },
+      "mixer":         { ".validate": "newData.isBoolean()" },
+      "startCalib":    { ".validate": "newData.isBoolean()" },
+      "emergencyStop": { ".validate": "newData.isBoolean()" },
+      "reboot":        { ".validate": "newData.isBoolean()" },
+
+      "$other": { ".validate": false }
+    }
+  }
+}

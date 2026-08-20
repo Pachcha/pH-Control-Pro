@@ -31,6 +31,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <esp_task_wdt.h>
+#include <esp_heap_caps.h>
 #include <cmath>
 #include <algorithm>
 
@@ -105,7 +106,12 @@
 
 // ── จังหวะส่งข้อมูลขึ้น Firebase ──
 #define FB_STATUS_ACTIVE_MS    5000
-#define FB_STATUS_CALIB_MS     2000      // ตอน calibrate ต้องเห็นแรงดันสดๆ
+#define FB_STATUS_CALIB_MS     4000      // ตอน calibrate ต้องเห็นแรงดันสด แต่ถี่กว่านี้ SSL เอาไม่อยู่
+
+// mbedTLS ต้องการบล็อกหน่วยความจำ "ต่อเนื่อง" ก้อนใหญ่ตอน handshake
+// ยอด free heap รวมเยอะไม่ได้แปลว่าจองได้ ถ้าหน่วยความจำแตกเป็นเสี่ยงๆ
+// ต่ำกว่านี้ให้ข้ามการส่งรอบนั้นไป ดีกว่าปล่อยให้ SSL พังแล้วหลุดทั้งเส้น
+#define FB_MIN_FREE_BLOCK      24000
 #define FB_STATUS_IDLE_MS      15000
 #define FB_HISTORY_MS          300000UL   // เก็บกราฟย้อนหลังทุก 5 นาที
 #define FB_NOT_READY_BACKOFF   5000
@@ -1124,6 +1130,8 @@ bool firebaseUploadStatus() {
   gJson.set("maxDosesPerHour",  MAX_DOSES_PER_HOUR);
   gJson.set("sensorErrorCount", state.sensorErrorCount);
   gJson.set("freeHeap",         (int)ESP.getFreeHeap());
+  gJson.set("minHeap",          (int)esp_get_minimum_free_heap_size());          // จุดต่ำสุดตั้งแต่บูต
+  gJson.set("maxBlock",         (int)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)); // บล็อกต่อเนื่องใหญ่สุด
   gJson.set("uptimeMin",        (int)(millis() / 60000));
   gJson.set("wifiRSSI",         WiFi.RSSI());
   gJson.set("fwVersion",        FW_VERSION);
@@ -1511,8 +1519,9 @@ void processCommands() {
 void taskFirebase(void* pv) {
   esp_task_wdt_add(NULL);
 
-  unsigned long lastStatus  = 0;
-  unsigned long lastHistory = 0;
+  unsigned long lastStatus    = 0;
+  unsigned long lastLowMemLog = 0;
+  unsigned long lastHistory   = 0;
   unsigned long lastWiFiTry = 0;
   float         lastSentPH  = -999.0;
   uint32_t      consecFails = 0;
@@ -1567,6 +1576,17 @@ void taskFirebase(void* pv) {
     uint32_t interval = state.calibMode      ? FB_STATUS_CALIB_MS
                       : isDosingInProgress() ? FB_STATUS_ACTIVE_MS
                                              : FB_STATUS_IDLE_MS;
+
+    // หน่วยความจำต่อเนื่องเหลือน้อย = อย่าเพิ่งเปิด SSL รอบใหม่ ไม่งั้น handshake พัง
+    // แล้วไลบรารีจะทิ้งทั้ง stream และ connection หลักไปด้วย
+    size_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (maxBlock < FB_MIN_FREE_BLOCK) {
+      if (isTimeElapsed(lastLowMemLog, 30000)) {
+        lastLowMemLog = now;
+        Serial.printf("[FB] บล็อกต่อเนื่องเหลือ %u ไบต์ ข้ามการส่งรอบนี้\n", (unsigned)maxBlock);
+      }
+      continue;
+    }
 
     if (isTimeElapsed(lastStatus, interval)) {
       lastStatus = now;

@@ -338,6 +338,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
       <div class="rows">
         <div class="row"><span class="k">สัญญาณ WiFi</span><span class="v" id="rssi">–</span></div>
         <div class="row"><span class="k">หน่วยความจำว่าง</span><span class="v" id="heap">–</span></div>
+        <div class="row"><span class="k">บล็อกต่อเนื่องใหญ่สุด</span><span class="v" id="maxBlock">–</span></div>
       </div>
       <div class="rows">
         <div class="row"><span class="k">เปิดเครื่องมาแล้ว</span><span class="v" id="uptime">–</span></div>
@@ -634,7 +635,18 @@ function renderStatus(d){
   $("calibCount").textContent = (d.calibCount ?? "–") + " ครั้ง";
 
   $("rssi").textContent   = (d.wifiRSSI ?? "–") + " dBm";
-  $("heap").textContent   = d.freeHeap ? Math.round(d.freeHeap / 1024) + " KB" : "–";
+  $("heap").textContent = d.freeHeap
+    ? Math.round(d.freeHeap / 1024) + " KB" + (d.minHeap ? " (ต่ำสุด " + Math.round(d.minHeap/1024) + ")" : "")
+    : "–";
+
+  // mbedTLS ต้องการบล็อกต่อเนื่องก้อนใหญ่ตอน handshake ต่ำกว่า 24 KB เริ่มเสี่ยง SSL พัง
+  const mb = Number(d.maxBlock);
+  const mbEl = $("maxBlock");
+  if (!mb) { mbEl.textContent = "–"; mbEl.style.color = ""; }
+  else {
+    mbEl.textContent = Math.round(mb / 1024) + " KB";
+    mbEl.style.color = mb < 24000 ? "var(--red)" : mb < 40000 ? "var(--amber)" : "var(--emerald)";
+  }
   $("uptime").textContent = d.uptimeMin != null ? fmtUptime(d.uptimeMin) : "–";
   $("senErr").textContent = (d.sensorErrorCount ?? "–") + " ครั้ง";
   $("fw").textContent     = d.fwVersion || "–";

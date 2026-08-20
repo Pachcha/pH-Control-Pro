@@ -251,7 +251,8 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
     <div class="card-title">⚡ สถานะการทำงาน</div>
     <div class="rows">
       <div class="row"><span class="k">อุณหภูมิน้ำ</span><span class="v" id="tempVal">--</span></div>
-      <div class="row"><span class="k">แรงดันดิบจากหัววัด</span><span class="v" id="phVolt">--</span></div>
+      <div class="row"><span class="k">แรงดันหลังกรอง</span><span class="v" id="phVolt">--</span></div>
+      <div class="row"><span class="k">สัญญาณรบกวน</span><span class="v" id="phNoise">--</span></div>
       <div class="row"><span class="k">โหมด</span><span class="v"><span class="pill off" id="modePill">–</span></span></div>
       <div class="row"><span class="k">กำลังจ่ายสาร</span><span class="v"><span class="pill off" id="dosePill">–</span></span></div>
       <div class="row"><span class="k">คำสั่งล่าสุด</span><span class="v" id="lastAction">–</span></div>
@@ -602,8 +603,18 @@ function renderStatus(d){
   $("tempVal").textContent = (d.temp > -100) ? fmt(d.temp, 1, " °C") : "–";
 
   const volt = (d.phVoltage != null && d.phVoltage >= 0) ? Number(d.phVoltage) : null;
+  const rawV = (d.phVoltageRaw != null && d.phVoltageRaw >= 0) ? Number(d.phVoltageRaw) : null;
   $("phVolt").textContent = volt === null ? "อ่านไม่ได้"
-                          : volt.toFixed(3) + " V" + (d.phStable ? " ✓" : " ~");
+                          : volt.toFixed(4) + " V" + (d.phStable ? " ✓" : " ~");
+
+  // ขนาดสัญญาณรบกวนก่อนกรอง — บอกว่าฮาร์ดแวร์สะอาดแค่ไหน
+  const nz = Number(d.phNoiseMv);
+  const nzEl = $("phNoise");
+  if (!nz) { nzEl.textContent = "–"; nzEl.style.color = ""; }
+  else {
+    nzEl.textContent = "±" + nz.toFixed(1) + " mV" + (rawV !== null ? "  (ดิบ " + rawV.toFixed(3) + ")" : "");
+    nzEl.style.color = nz > 15 ? "var(--red)" : nz > 5 ? "var(--amber)" : "var(--emerald)";
+  }
 
   const pts = [d.calibV1, d.calibV2, d.calibV3].filter(v => v != null && v > 0);
   $("calibPts").textContent = pts.length ? pts.map(v => Number(v).toFixed(3)).join(" / ") : "–";
@@ -680,7 +691,7 @@ function renderCalibPanel(d, volt){
   if (step > 3) {
     $("calibStepTxt").textContent = "เก็บครบ 3 จุดแล้ว";
     $("calibSolTxt").textContent  = "⚙️ กำลังคำนวณและตรวจผล…";
-    $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(3);
+    $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(4);
     $("calibStab").className      = "calib-stab";
     $("calibStab").textContent    = "รอสักครู่";
     $("calibBar").style.width     = "100%";
@@ -691,7 +702,7 @@ function renderCalibPanel(d, volt){
 
   $("calibStepTxt").textContent = "ขั้นที่ " + step + " / 3";
   $("calibSolTxt").textContent  = "จุ่มหัววัดในน้ำยา " + (BUFFERS[step - 1] || "–");
-  $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(3);
+  $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(4);
 
   const st  = $("calibStab");
   const bar = $("calibBar");

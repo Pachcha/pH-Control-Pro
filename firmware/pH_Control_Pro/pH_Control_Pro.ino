@@ -72,8 +72,16 @@
 //   2) นิ่งต่อเนื่องกันจริง ไม่ใช่นิ่งแวบเดียวแล้วไหลต่อ
 #define CALIB_MIN_DWELL_MS    30000UL
 #define CALIB_STABLE_HOLD_MS  10000UL
-#define PH_STABLE_WINDOW   30        // จำนวนตัวอย่างที่ใช้ตัดสินว่าแรงดันนิ่งแล้ว
-#define PH_STABLE_MV       0.004     // ส่วนเบี่ยงเบนต่ำกว่า 4 mV ถือว่านิ่ง
+// ── ตัวกรองสัญญาณ (EMA แบบอิงเวลาจริง) ──
+// pH ในถังเปลี่ยนช้ามาก การเฉลี่ยย้อนหลังสิบกว่าวินาทีจึงไม่เสียข้อมูลอะไรเลย
+// แต่ตัดสัญญาณรบกวนแบบสุ่มได้เยอะ (วัดจริงได้ส่วนเบี่ยงเบน 22 mV)
+//
+// ★ จุดสำคัญ: EMA กรอง "noise แบบสุ่ม" ออก แต่ยัง "คงแนวโน้ม" ไว้
+//   หัววัดที่ยังไหลเข้าหาค่าจริงจะยังเห็นเป็นแนวโน้มอยู่ เราจึงตัดสิน
+//   ความนิ่งจากสัญญาณที่กรองแล้วได้ = "นิ่ง" แปลว่าหยุดไหลจริง ไม่ใช่แค่ noise น้อย
+#define PH_FILTER_TAU_MS   15000     // ค่าคงที่เวลาของตัวกรอง
+#define PH_STABLE_WINDOW   30        // จำนวนตัวอย่างที่ใช้ตัดสินว่านิ่ง
+#define PH_STABLE_MV       0.0015    // เกณฑ์นิ่ง 1.5 mV — เข้มได้เพราะวัดบนสัญญาณที่กรองแล้ว
 #define CALIB_MIN_R2       90.0      // R² ต่ำกว่านี้ถือว่า calibrate ไม่ผ่าน
 
 // ★ R² อย่างเดียวไม่พอ! R² วัดแค่ว่า 3 จุดเรียงเป็นเส้นตรงไหม ไม่ได้วัดว่าหัววัดไวพอไหม
@@ -222,7 +230,9 @@ volatile uint32_t gSensorSeq      = 0;    // เพิ่มขึ้น 1 ท�
 
 // แรงดันดิบจากขา pH — เผยแพร่ขึ้น /status เสมอ ใช้ดูว่าต่อสายติดไหม
 // และใช้ดูว่าค่านิ่งพอจะกดเก็บตอน calibrate หรือยัง
-volatile float gPhVoltage         = NAN;
+volatile float gPhVoltage         = NAN;   // ผ่านตัวกรองแล้ว — ใช้คำนวณ pH และเก็บตอน calibrate
+volatile float gPhVoltageRaw      = NAN;   // ดิบๆ ก่อนกรอง — ไว้ดูว่าสัญญาณรบกวนแรงแค่ไหน
+volatile float gPhNoiseMv         = 0;     // ขนาดสัญญาณรบกวนที่ตัวกรองกำจัดออกไป (mV)
 volatile bool  gPhStable          = false;
 volatile bool  gCalibCaptureReq   = false;   // คำสั่งเก็บค่าจากหน้าเว็บ
 volatile int   gCalibDwellSec     = 0;       // อยู่ในขั้นนี้มากี่วินาทีแล้ว
@@ -349,29 +359,58 @@ float readPhVoltage(int samples) {
   return getMedianValue(v + lo, hi - lo);
 }
 
-// ติดตามว่าแรงดันนิ่งแล้วหรือยัง — หัววัด pH ต้องใช้เวลา 30-60 วิกว่าจะเข้าที่
-// ถ้าเก็บค่าตอนยังไม่นิ่ง เส้น calibration จะเพี้ยนและ R² ตก
-void trackPhVoltage(float v) {
-  static float    win[PH_STABLE_WINDOW];
-  static int      idx = 0, filled = 0;
+// กรองสัญญาณ + ติดตามว่านิ่งแล้วหรือยัง
+// เรียกทุกครั้งที่อ่านแรงดันดิบได้ ทั้งตอนทำงานปกติและตอน calibrate
+void trackPhVoltage(float raw) {
+  static float         win[PH_STABLE_WINDOW];   // หน้าต่างของค่าที่กรองแล้ว
+  static int           idx = 0, filled = 0;
+  static float         rawWin[PH_STABLE_WINDOW];
+  static unsigned long lastMs = 0;
 
-  gPhVoltage = v;
+  gPhVoltageRaw = raw;
 
-  if (isnan(v)) { filled = 0; gPhStable = false; return; }
+  if (isnan(raw)) {
+    filled = 0; lastMs = 0;
+    gPhStable = false; gPhNoiseMv = 0;
+    return;
+  }
 
-  win[idx] = v;
+  // ── EMA อิงเวลาจริง ──
+  // คำนวณ alpha จาก dt ที่ผ่านไปจริง ทำให้ได้ค่าคงที่เวลาเท่ากันเสมอ
+  // ไม่ว่าจะถูกเรียกถี่ (ตอน calibrate ~200 ms) หรือห่าง (ตอนปกติ ~1 วิ)
+  unsigned long now = millis();
+  unsigned long dt  = lastMs ? (unsigned long)(now - lastMs) : PH_FILTER_TAU_MS;
+  lastMs = now;
+  if (dt > PH_FILTER_TAU_MS) dt = PH_FILTER_TAU_MS;   // กันกระโดดหลังหยุดไปนาน
+
+  if (isnan(gPhVoltage)) {
+    gPhVoltage = raw;                                  // ค่าแรก เริ่มจากตรงนั้นเลย
+  } else {
+    float alpha = (float)dt / (float)(PH_FILTER_TAU_MS + dt);
+    gPhVoltage = gPhVoltage + alpha * (raw - gPhVoltage);
+  }
+
+  // ── หน้าต่างสำหรับตัดสินความนิ่ง (ใช้ค่าที่กรองแล้ว) ──
+  win[idx]    = gPhVoltage;
+  rawWin[idx] = raw;
   idx = (idx + 1) % PH_STABLE_WINDOW;
   if (filled < PH_STABLE_WINDOW) filled++;
+
   if (filled < PH_STABLE_WINDOW) { gPhStable = false; return; }
 
-  float mean = 0;
-  for (int i = 0; i < PH_STABLE_WINDOW; i++) mean += win[i];
-  mean /= PH_STABLE_WINDOW;
+  float mean = 0, rawMean = 0;
+  for (int i = 0; i < PH_STABLE_WINDOW; i++) { mean += win[i]; rawMean += rawWin[i]; }
+  mean    /= PH_STABLE_WINDOW;
+  rawMean /= PH_STABLE_WINDOW;
 
-  float var = 0;
-  for (int i = 0; i < PH_STABLE_WINDOW; i++) var += (win[i] - mean) * (win[i] - mean);
+  float var = 0, rawVar = 0;
+  for (int i = 0; i < PH_STABLE_WINDOW; i++) {
+    var    += (win[i]    - mean)    * (win[i]    - mean);
+    rawVar += (rawWin[i] - rawMean) * (rawWin[i] - rawMean);
+  }
 
-  gPhStable = sqrt(var / PH_STABLE_WINDOW) < PH_STABLE_MV;
+  gPhNoiseMv = sqrt(rawVar / PH_STABLE_WINDOW) * 1000.0;   // noise ก่อนกรอง ไว้โชว์ให้ดู
+  gPhStable  = sqrt(var / PH_STABLE_WINDOW) < PH_STABLE_MV;
 }
 
 float readPH() {
@@ -383,7 +422,9 @@ float readPH() {
       // ยังไม่ calibrate = มีแรงดันให้ดูได้ แต่แปลงเป็น pH ยังไม่ได้
       if (!cfg.isPhCalibrated) return NAN;
 
-      float phValue = cfg.phSlope * v + cfg.phIntercept;
+      // ใช้ค่าที่ผ่านตัวกรองแล้ว ไม่ใช่ค่าดิบ — pH ในถังเปลี่ยนช้า
+      // การเฉลี่ยย้อนหลังไม่เสียข้อมูล แต่ตัด noise ได้เยอะ
+      float phValue = cfg.phSlope * gPhVoltage + cfg.phIntercept;
       if (phValue >= 0.0 && phValue <= 14.0) return phValue;
     }
 
@@ -392,26 +433,6 @@ float readPH() {
 
   logError("อ่านค่า pH ไม่สำเร็จ");
   return NAN;
-}
-
-// เก็บค่านิ่งๆ สำหรับใช้ตอน calibrate — ตัดค่าสุดขอบ 20% แล้วเฉลี่ย
-float collectStableReading(int pin, int samples) {
-  const int MAX_SAMPLES = 30;
-  if (samples > MAX_SAMPLES) samples = MAX_SAMPLES;
-
-  float readings[MAX_SAMPLES];
-  for (int i = 0; i < samples; i++) {
-    readings[i] = analogRead(pin) * (3.3 / 4095.0);
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-
-  std::sort(readings, readings + samples);
-  int startIdx = samples / 5;
-  int endIdx   = samples - startIdx;
-
-  float sum = 0;
-  for (int i = startIdx; i < endIdx; i++) sum += readings[i];
-  return sum / (endIdx - startIdx);
 }
 
 // ============================================================================
@@ -826,7 +847,9 @@ void processCalibration() {
     bool captured = false;
     if (wantCapture) {
       showMessage("READING...", "hold still");
-      cfg.phCalibVoltage[idx] = collectStableReading(PH_PIN, 30);
+      // เก็บค่าที่ผ่านตัวกรองแล้ว ซึ่งเป็นค่าเฉลี่ยย้อนหลังราว 15 วินาที
+      // ซึ่งทนสัญญาณรบกวนกว่าการเฉลี่ยสดๆ ไม่กี่วินาทีมาก
+      cfg.phCalibVoltage[idx] = gPhVoltage;
       captured = true;
       calibStableSince = 0;
     } else if (isTimeElapsed(calibStartTime, CALIB_ABORT_MS)) {
@@ -1097,6 +1120,8 @@ bool firebaseUploadStatus() {
   gJson.set("ph",               isnan(ph) ? -1.0 : (double)ph);
   gJson.set("phVoltage",        isnan(gPhVoltage) ? -1.0 : (double)gPhVoltage);
   gJson.set("phStable",         (bool)gPhStable);
+  gJson.set("phVoltageRaw",     isnan(gPhVoltageRaw) ? -1.0 : (double)gPhVoltageRaw);
+  gJson.set("phNoiseMv",        (double)gPhNoiseMv);
   gJson.set("calibDwellSec",    (int)gCalibDwellSec);
   gJson.set("calibStableSec",   (int)gCalibStableSec);
   gJson.set("calibNeedDwell",   (int)(CALIB_MIN_DWELL_MS / 1000));

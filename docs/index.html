@@ -663,6 +663,20 @@ function renderCalibPanel(d, volt){
   panel.style.display = "block";
 
   const step = Number(d.calibStep) || 1;
+
+  // ขั้น 4 ไม่ใช่ขั้นที่ผู้ใช้ต้องทำ เป็นสถานะภายในตอนคำนวณและบันทึกผล
+  if (step > 3) {
+    $("calibStepTxt").textContent = "เก็บครบ 3 จุดแล้ว";
+    $("calibSolTxt").textContent  = "⚙️ กำลังคำนวณและตรวจผล…";
+    $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(3);
+    $("calibStab").className      = "calib-stab";
+    $("calibStab").textContent    = "รอสักครู่";
+    $("calibBar").style.width     = "100%";
+    $("btnCapture").style.display = "none";
+    return;
+  }
+  $("btnCapture").style.display = "";
+
   $("calibStepTxt").textContent = "ขั้นที่ " + step + " / 3";
   $("calibSolTxt").textContent  = "จุ่มหัววัดในน้ำยา " + (BUFFERS[step - 1] || "–");
   $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(3);

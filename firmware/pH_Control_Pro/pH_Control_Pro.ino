@@ -177,7 +177,7 @@ enum CmdType : uint8_t {
   CMD_ESTOP_ON, CMD_ESTOP_OFF, CMD_REBOOT
 };
 
-#define ALERT_MSG_LEN 96
+#define ALERT_MSG_LEN 224   // ภาษาไทยกินตัวละ 3 ไบต์ ข้อความอธิบายยาวๆ ต้องเผื่อมาก
 struct AlertMsg {
   char    message[ALERT_MSG_LEN];
   uint8_t priority;   // 0=info 1=warn 2=error
@@ -1050,10 +1050,20 @@ void firebaseInit() {
 
 void sendAlert(const char* msg, uint8_t priority) {
   if (xAlertQueue == NULL) return;
+
   AlertMsg a;
-  strncpy(a.message, msg, ALERT_MSG_LEN - 1);
-  a.message[ALERT_MSG_LEN - 1] = '\0';
-  a.priority = priority;
+  size_t n = strlen(msg);
+
+  if (n >= ALERT_MSG_LEN) {
+    // ตัดโดยไม่ผ่ากลางตัวอักษร UTF-8 ไม่งั้นจะได้ไบต์เสียแล้วขึ้นเป็น "?" บนหน้าเว็บ
+    // ไบต์ต่อเนื่องของ UTF-8 มีรูปแบบ 10xxxxxx ให้ถอยจนพ้นมัน
+    n = ALERT_MSG_LEN - 1;
+    while (n > 0 && ((uint8_t)msg[n] & 0xC0) == 0x80) n--;
+  }
+
+  memcpy(a.message, msg, n);
+  a.message[n] = '\0';
+  a.priority   = priority;
   xQueueSend(xAlertQueue, &a, pdMS_TO_TICKS(50));
 }
 
@@ -1199,7 +1209,10 @@ void firebaseSeedControl() {
 
 void firebaseStartStream() {
   if (Firebase.RTDB.beginStream(&fbdoStream, "/control")) {
-    Firebase.RTDB.setStreamCallback(&fbdoStream, streamCallback, streamTimeoutCallback);
+    // ★ stack ของ stream task ค่า default คือ 8192 ซึ่งตึงมาก เพราะ callback ของเรา
+    //   ต้องวน FirebaseJson + สร้าง String ซ้อนอยู่บนงาน SSL/parse ของไลบรารีเอง
+    //   ขยายเป็น 16384 เท่ากับ taskFirebase (RAM เหลือเฟือ ใช้อยู่แค่ 15%)
+    Firebase.RTDB.setStreamCallback(&fbdoStream, streamCallback, streamTimeoutCallback, 16384);
     gStreamStarted = true;
     logInfo("เปิด stream /control สำเร็จ");
   } else {

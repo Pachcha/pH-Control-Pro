@@ -64,6 +64,15 @@
 #define PH_STABLE_MV       0.004     // ส่วนเบี่ยงเบนต่ำกว่า 4 mV ถือว่านิ่ง
 #define CALIB_MIN_R2       90.0      // R² ต่ำกว่านี้ถือว่า calibrate ไม่ผ่าน
 
+// ★ R² อย่างเดียวไม่พอ! R² วัดแค่ว่า 3 จุดเรียงเป็นเส้นตรงไหม ไม่ได้วัดว่าหัววัดไวพอไหม
+//   หัววัดที่เสีย/สายหลวม จะให้แรงดันเดินสุ่มทีละนิด ถ้าบังเอิญไต่ขึ้นตามลำดับ
+//   R² จะสูงถึง 99% ทั้งที่เป็นแค่ noise แล้วได้ slope ชันมากจนสัญญาณรบกวนไม่กี่ mV
+//   กลายเป็น pH แกว่งเป็นหน่วย → ระบบสั่งจ่ายสารเคมีมั่ว
+//   ทฤษฎี Nernst ที่ 25°C ให้ 59 mV/pH แม้ไม่มีวงจรขยาย = 306 mV ในช่วง pH 4.01-9.18
+//   ตั้งเกณฑ์ขั้นต่ำไว้ต่ำกว่านั้นมาก เพื่อจับเฉพาะกรณีที่พังจริงๆ
+#define CALIB_MIN_SPAN_V   0.20      // ช่วงแรงดันขั้นต่ำระหว่างจุดแรกกับจุดสุดท้าย
+#define CALIB_PH_RANGE     (CALIB_PH_3 - CALIB_PH_1)
+
 #define WDT_TIMEOUT_SEC    30
 #define MAX_SENSOR_RETRIES 3
 #define SENSOR_ERROR_LIMIT 5         // อ่านพลาดติดกันกี่ครั้งถึงจะหยุดฉุกเฉิน
@@ -627,8 +636,52 @@ void loadConfig() {
 //  Calibration — 3 จุด (pH 4.01 / 6.86 / 9.18) แล้วหาเส้นตรงด้วย linear regression
 // ============================================================================
 
+// รายงานว่า calibrate ไม่ผ่านพร้อมเหตุผล แล้วล้างสถานะให้ระบบไม่เอาไปใช้
+void calibFailed(const char* reason) {
+  cfg.phR2           = 0.0;
+  cfg.isPhCalibrated = 0;
+
+  char msg[ALERT_MSG_LEN];
+  snprintf(msg, sizeof(msg), "Calibrate ไม่ผ่าน: %s", reason);
+  logError(msg);
+  sendAlert(msg, 2);
+
+  showMessage("CALIB FAILED", reason);
+  vTaskDelay(pdMS_TO_TICKS(4000));
+}
+
 void calculatePHCalibration() {
   float knownPH[3] = {CALIB_PH_1, CALIB_PH_2, CALIB_PH_3};
+
+  float v1 = cfg.phCalibVoltage[0];
+  float v2 = cfg.phCalibVoltage[1];
+  float v3 = cfg.phCalibVoltage[2];
+
+  // ── ด่านที่ 1: หัววัดไวพอไหม ──
+  float spanV   = fabs(v3 - v1);
+  float mvPerPh = (spanV * 1000.0) / CALIB_PH_RANGE;
+
+  char detail[ALERT_MSG_LEN];
+  snprintf(detail, sizeof(detail), "V1=%.4f V2=%.4f V3=%.4f span=%.0fmV (%.1f mV/pH)",
+           v1, v2, v3, spanV * 1000.0, mvPerPh);
+  logInfo(detail);
+  sendAlert(detail, 0);
+
+  if (spanV < CALIB_MIN_SPAN_V) {
+    char r[40];
+    snprintf(r, sizeof(r), "span %.0fmV noisy", spanV * 1000.0);
+    calibFailed(r);
+    sendAlert("หัววัดแทบไม่ตอบสนองต่อ pH — ตรวจข้อต่อ BNC, สภาพหัววัด, ไฟเลี้ยงโมดูล", 2);
+    return;
+  }
+
+  // ── ด่านที่ 2: แรงดันต้องไปทางเดียวกันทั้ง 3 จุด ──
+  bool monotonic = ((v2 > v1 && v3 > v2) || (v2 < v1 && v3 < v2));
+  if (!monotonic) {
+    calibFailed("not monotonic");
+    sendAlert("แรงดันไม่ไล่ไปทางเดียวกันทั้ง 3 จุด — น่าจะเก็บค่าตอนยังไม่นิ่ง หรือไม่ได้ล้างหัววัด", 2);
+    return;
+  }
 
   float sum_x = 0, sum_y = 0, sum_xy = 0, sum_x2 = 0;
   for (int i = 0; i < 3; i++) {
@@ -664,10 +717,10 @@ void calculatePHCalibration() {
   cfg.phR2           = (ss_tot > 0) ? (1 - ss_res / ss_tot) * 100.0 : 0.0;
   cfg.isPhCalibrated = (cfg.phR2 > CALIB_MIN_R2) ? 1 : 0;
 
-  char msg[128];
-  snprintf(msg, sizeof(msg), "Calibration: slope=%.3f intercept=%.3f R2=%.1f%% -> %s",
-           cfg.phSlope, cfg.phIntercept, cfg.phR2,
-           cfg.isPhCalibrated ? "ผ่าน" : "ไม่ผ่าน");
+  char msg[ALERT_MSG_LEN];
+  snprintf(msg, sizeof(msg), "Calibration: slope=%.2f pH/V  R2=%.1f%%  %.1f mV/pH -> %s",
+           cfg.phSlope, cfg.phR2, mvPerPh,
+           cfg.isPhCalibrated ? "ผ่าน" : "ไม่ผ่าน (R2 ต่ำ)");
   logInfo(msg);
   sendAlert(msg, cfg.isPhCalibrated ? 0 : 2);
 
@@ -976,6 +1029,8 @@ bool firebaseUploadStatus() {
   gJson.set("calibV1",          (double)cfg.phCalibVoltage[0]);
   gJson.set("calibV2",          (double)cfg.phCalibVoltage[1]);
   gJson.set("calibV3",          (double)cfg.phCalibVoltage[2]);
+  gJson.set("calibSpanMv",      (double)(fabs(cfg.phCalibVoltage[2] - cfg.phCalibVoltage[0]) * 1000.0));
+  gJson.set("calibMvPerPh",     (double)(fabs(cfg.phCalibVoltage[2] - cfg.phCalibVoltage[0]) * 1000.0 / CALIB_PH_RANGE));
   gJson.set("temp",             isnan(temp) ? -127.0 : (double)temp);
   gJson.set("phValid",          !isnan(ph));
   gJson.set("dosing",           isDosingInProgress());

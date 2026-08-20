@@ -268,6 +268,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
       <div class="row"><span class="k">ความแม่น (R²)</span><span class="v" id="r2Val">–</span></div>
       <div class="row"><span class="k">calibrate มาแล้ว</span><span class="v" id="calibCount">–</span></div>
       <div class="row"><span class="k">จุดที่เก็บได้ (V)</span><span class="v" id="calibPts" style="font-size:.78rem">–</span></div>
+      <div class="row"><span class="k">ความไวหัววัด</span><span class="v" id="calibSens">–</span></div>
     </div>
   </div>
 
@@ -602,6 +603,15 @@ function renderStatus(d){
   const pts = [d.calibV1, d.calibV2, d.calibV3].filter(v => v != null && v > 0);
   $("calibPts").textContent = pts.length ? pts.map(v => Number(v).toFixed(3)).join(" / ") : "–";
 
+  // ทฤษฎี Nernst ที่ 25°C = 59 mV/pH แม้ไม่มีวงจรขยาย ต่ำกว่านี้มาก = หัววัดมีปัญหา
+  const mvph = Number(d.calibMvPerPh);
+  const sens = $("calibSens");
+  if (!mvph) { sens.textContent = "–"; sens.style.color = ""; }
+  else {
+    sens.textContent = mvph.toFixed(1) + " mV/pH";
+    sens.style.color = mvph < 40 ? "var(--red)" : mvph < 55 ? "var(--amber)" : "var(--emerald)";
+  }
+
   renderCalibPanel(d, volt);
   setPill($("modePill"), !!d.autoMode, "อัตโนมัติ", "สั่งมือ");
   setPill($("dosePill"), !!d.dosing, d.lastAction || "กำลังจ่าย", "ไม่ได้จ่าย");
@@ -734,6 +744,9 @@ function refreshBanner(){
     return setBanner("err",  "⚠️ จ่ายสารครบลิมิตต่อชั่วโมงแล้ว ระบบปิดโหมดอัตโนมัติเพื่อความปลอดภัย");
   if (!d.calibrated)
     return setBanner("warn", "⚠️ ยังไม่ได้ calibrate เซนเซอร์ pH — ค่าที่อ่านได้ยังใช้ไม่ได้");
+  if (d.calibrated && d.calibMvPerPh && d.calibMvPerPh < 40)
+    return setBanner("err", "🧪 หัววัดไวแค่ " + Number(d.calibMvPerPh).toFixed(0) +
+                            " mV/pH (ปกติ ≥ 59) — ค่า pH ที่อ่านได้เชื่อไม่ได้ ตรวจ BNC/หัววัด/ไฟเลี้ยงโมดูล");
   if (d.sensorErrorCount > 0)
     return setBanner("warn", "⚠️ เซนเซอร์อ่านพลาด " + d.sensorErrorCount + " ครั้งติดกัน");
 

@@ -48,8 +48,26 @@
 #define PH_DOWN_RELAY      27
 #define MIXER_RELAY        16
 
-#define RELAY_ON           LOW    // รีเลย์โมดูลทั่วไปเป็น active LOW
-#define RELAY_OFF          HIGH
+// ═══ ขั้วสัญญาณของโมดูลขับโหลด — ตั้งทีละช่องได้ ═══
+//  รีเลย์ทั่วไป      : active LOW   → ใส่ 1
+//  โมดูล MOSFET     : ส่วนใหญ่ active HIGH → ใส่ 0   (แต่ต้องทดสอบก่อน! ดู README)
+//
+//  ★ ตั้งผิด = ตอนบูตโค้ดสั่ง "ปิด" แต่โมดูลเข้าใจว่า "เปิด"
+//    ปั๊มจ่ายสารเคมีจะทำงานค้างทันทีที่เสียบไฟและไม่มีทางหยุด
+//    วิธีทดสอบอย่างปลอดภัย: ถอดสายยางออกจากขวดสารเคมีก่อน แล้วค่อยจ่ายไฟ
+#define PH_UP_ACTIVE_LOW    1
+#define PH_DOWN_ACTIVE_LOW  1
+#define MIXER_ACTIVE_LOW    1
+
+#define ON_LEVEL(activeLow)   ((activeLow) ? LOW  : HIGH)
+#define OFF_LEVEL(activeLow)  ((activeLow) ? HIGH : LOW)
+
+#define PH_UP_ON     ON_LEVEL(PH_UP_ACTIVE_LOW)
+#define PH_UP_OFF    OFF_LEVEL(PH_UP_ACTIVE_LOW)
+#define PH_DOWN_ON   ON_LEVEL(PH_DOWN_ACTIVE_LOW)
+#define PH_DOWN_OFF  OFF_LEVEL(PH_DOWN_ACTIVE_LOW)
+#define MIXER_ON     ON_LEVEL(MIXER_ACTIVE_LOW)
+#define MIXER_OFF    OFF_LEVEL(MIXER_ACTIVE_LOW)
 
 // ============================================================================
 //  ค่าคงที่ระบบ
@@ -478,18 +496,18 @@ void setLastAction(const char* action) {
 
 void stopAllDosing() {
   if (xSemaphoreTake(dosingMutex, pdMS_TO_TICKS(1000))) {
-    digitalWrite(PH_UP_RELAY,   RELAY_OFF);
-    digitalWrite(PH_DOWN_RELAY, RELAY_OFF);
-    digitalWrite(MIXER_RELAY,   RELAY_OFF);
+    digitalWrite(PH_UP_RELAY,   PH_UP_OFF);
+    digitalWrite(PH_DOWN_RELAY, PH_DOWN_OFF);
+    digitalWrite(MIXER_RELAY,   MIXER_OFF);
     state.dosingInProgress = false;
     xSemaphoreGive(dosingMutex);
   }
 }
 
 void runMixer(unsigned int durationMs) {
-  digitalWrite(MIXER_RELAY, RELAY_ON);
+  digitalWrite(MIXER_RELAY, MIXER_ON);
   vTaskDelay(pdMS_TO_TICKS(durationMs));
-  digitalWrite(MIXER_RELAY, RELAY_OFF);
+  digitalWrite(MIXER_RELAY, MIXER_OFF);
 }
 
 // เข้าเป้าแล้วหรือยัง (เทียบกับ tolerance)
@@ -603,8 +621,8 @@ bool startDosing(bool isUp, bool manual) {
   vTaskDelay(pdMS_TO_TICKS(100));
 
   if (xSemaphoreTake(dosingMutex, pdMS_TO_TICKS(1000))) {
-    digitalWrite(isUp ? PH_UP_RELAY : PH_DOWN_RELAY, RELAY_ON);
-    digitalWrite(MIXER_RELAY, RELAY_ON);
+    digitalWrite(isUp ? PH_UP_RELAY : PH_DOWN_RELAY, isUp ? PH_UP_ON : PH_DOWN_ON);
+    digitalWrite(MIXER_RELAY, MIXER_ON);
     state.lastDosingTime   = millis();
     state.dosingInProgress = true;
     setLastAction(isUp ? "pH Up" : "pH Down");
@@ -1136,9 +1154,9 @@ bool firebaseUploadStatus() {
   gJson.set("dosing",           isDosingInProgress());
   gJson.set("lastAction",       state.lastAction);
   gJson.set("cooldownSec",      (int)cooldownLeft);
-  gJson.set("phUp",             (bool)(digitalRead(PH_UP_RELAY)   == RELAY_ON));
-  gJson.set("phDown",           (bool)(digitalRead(PH_DOWN_RELAY) == RELAY_ON));
-  gJson.set("mixer",            (bool)(digitalRead(MIXER_RELAY)   == RELAY_ON));
+  gJson.set("phUp",             (bool)(digitalRead(PH_UP_RELAY)   == PH_UP_ON));
+  gJson.set("phDown",           (bool)(digitalRead(PH_DOWN_RELAY) == PH_DOWN_ON));
+  gJson.set("mixer",            (bool)(digitalRead(MIXER_RELAY)   == MIXER_ON));
   gJson.set("calibrated",       (bool)cfg.isPhCalibrated);
   gJson.set("calibMode",        state.calibMode);
   gJson.set("calibStep",        state.calibStep);
@@ -1384,9 +1402,9 @@ void taskControl(void* pv) {
 
       if (timeUp || (reached && stable)) {
         if (xSemaphoreTake(dosingMutex, pdMS_TO_TICKS(1000))) {
-          digitalWrite(PH_UP_RELAY,   RELAY_OFF);
-          digitalWrite(PH_DOWN_RELAY, RELAY_OFF);
-          digitalWrite(MIXER_RELAY,   RELAY_OFF);
+          digitalWrite(PH_UP_RELAY,   PH_UP_OFF);
+          digitalWrite(PH_DOWN_RELAY, PH_DOWN_OFF);
+          digitalWrite(MIXER_RELAY,   MIXER_OFF);
           state.dosingInProgress = false;
           state.lastDosingEnd    = millis();
           xSemaphoreGive(dosingMutex);
@@ -1492,7 +1510,7 @@ void processCommands() {
         break;
 
       case CMD_MIXER:
-        digitalWrite(MIXER_RELAY, gMixerWant ? RELAY_ON : RELAY_OFF);
+        digitalWrite(MIXER_RELAY, gMixerWant ? MIXER_ON : MIXER_OFF);
         logInfo(gMixerWant ? "เปิดเครื่องกวน (สั่งมือ)" : "ปิดเครื่องกวน (สั่งมือ)");
         break;
 
@@ -1686,9 +1704,9 @@ void setup() {
   pinMode(PH_UP_RELAY,   OUTPUT);
   pinMode(PH_DOWN_RELAY, OUTPUT);
   pinMode(MIXER_RELAY,   OUTPUT);
-  digitalWrite(PH_UP_RELAY,   RELAY_OFF);
-  digitalWrite(PH_DOWN_RELAY, RELAY_OFF);
-  digitalWrite(MIXER_RELAY,   RELAY_OFF);
+  digitalWrite(PH_UP_RELAY,   PH_UP_OFF);
+  digitalWrite(PH_DOWN_RELAY, PH_DOWN_OFF);
+  digitalWrite(MIXER_RELAY,   MIXER_OFF);
   pinMode(CALIB_BUTTON, INPUT_PULLUP);
 
   analogSetAttenuation(ADC_11db);   // ให้วัดได้ถึง ~3.3V

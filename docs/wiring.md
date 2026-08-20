@@ -57,10 +57,13 @@
 แก้ที่หัวไฟล์ `firmware/pH_Control_Pro/pH_Control_Pro.ino`:
 
 ```cpp
-#define PH_UP_ACTIVE_LOW    1     // 1 = รีเลย์ , 0 = MOSFET active HIGH
-#define PH_DOWN_ACTIVE_LOW  1
-#define MIXER_ACTIVE_LOW    1
+#define PH_UP_ACTIVE_LOW    0     // 1 = รีเลย์ , 0 = MOSFET active HIGH
+#define PH_DOWN_ACTIVE_LOW  0
+#define MIXER_ACTIVE_LOW    0
 ```
+
+> **ค่าปัจจุบันในโปรเจกต์ตั้งเป็น `0` (MOSFET) แล้ว**
+> ถ้าจะกลับไปใช้รีเลย์ ต้องเปลี่ยนกลับเป็น `1` **ก่อน**แฟลช
 
 ตั้งแยกทีละช่องได้ ถ้าผสมรีเลย์กับ MOSFET ก็ยังใช้งานได้
 

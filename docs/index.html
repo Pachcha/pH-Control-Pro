@@ -401,7 +401,8 @@ function setConn(cls, txt){
 
 function setBanner(type, txt){
   const b = $("banner");
-  if (!txt) { b.className = "banner"; return; }
+  // ต้องล้างข้อความด้วย ไม่ใช่แค่ซ่อน ไม่งั้นข้อความเก่าค้างใน DOM
+  if (!txt) { b.className = "banner"; b.textContent = ""; return; }
   b.className = "banner show " + type;
   b.textContent = txt;
 }

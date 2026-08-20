@@ -236,6 +236,7 @@ int           doseTsCount = 0;
 // ตัวแปรระหว่าง calibrate
 unsigned long calibStartTime   = 0;
 unsigned long calibStableSince = 0;   // เริ่มนิ่งตั้งแต่เมื่อไหร่ (0 = ยังไม่นิ่ง)
+int           calibBtnPrev     = LOW; // สถานะปุ่มรอบก่อน ใช้จับ "ขอบขาลง"
 
 // ============================================================================
 //  ประกาศฟังก์ชันล่วงหน้า
@@ -751,6 +752,9 @@ void startCalibration() {
     calibStableSince = 0;
     gCalibDwellSec   = 0;
     gCalibStableSec  = 0;
+    // ตั้งเป็น LOW ไว้ เพื่อบังคับให้ต้องปล่อยปุ่มก่อนถึงจะนับเป็นการกดครั้งใหม่
+    // ไม่งั้นนิ้วที่ยังกดค้างจากตอนเข้าโหมดจะเก็บค่าจุดแรกทันทีตั้งแต่ยังไม่จุ่มน้ำยา
+    calibBtnPrev     = LOW;
     xSemaphoreGive(calibMutex);
   }
 
@@ -804,8 +808,13 @@ void processCalibration() {
     // เก็บอัตโนมัติเมื่ออยู่ในขั้นนี้นานพอ "และ" นิ่งต่อเนื่องนานพอ
     bool autoReady = (dwellMs >= CALIB_MIN_DWELL_MS) && (stableMs >= CALIB_STABLE_HOLD_MS);
 
+    // จับ "ขอบขาลง" ของปุ่ม ไม่ใช่ระดับ — กันกดค้างแล้วเก็บรัวหลายจุดติดกัน
+    int  btnNow  = digitalRead(CALIB_BUTTON);
+    bool btnEdge = (calibBtnPrev == HIGH && btnNow == LOW);
+    calibBtnPrev = btnNow;
+
     // ยังกดเองได้ตลอด ถ้าไม่อยากรอ
-    bool wantCapture = (digitalRead(CALIB_BUTTON) == LOW) || gCalibCaptureReq || autoReady;
+    bool wantCapture = btnEdge || gCalibCaptureReq || autoReady;
     gCalibCaptureReq = false;
 
     bool captured = false;
@@ -819,6 +828,8 @@ void processCalibration() {
       logWarning("ค่าไม่นิ่งภายใน 5 นาที — ยกเลิก calibration");
       sendAlert("ยกเลิก calibration: ค่าไม่นิ่งพอภายใน 5 นาที ตรวจหัววัดกับข้อต่อ BNC", 1);
       calibStableSince = 0;
+      gCalibDwellSec   = 0;
+      gCalibStableSec  = 0;
       showMessage("CALIB", "CANCELLED");
       vTaskDelay(pdMS_TO_TICKS(2500));
       state.calibMode = false;
@@ -826,7 +837,7 @@ void processCalibration() {
     }
 
     if (captured) {
-      char msg[64];
+      char msg[ALERT_MSG_LEN];   // ตัวอักษรไทยกินตัวละ 3 ไบต์ 64 ไบต์ไม่พอ ข้อความจะโดนตัด
       snprintf(msg, sizeof(msg), "เก็บจุดที่ %d/3 ได้ %.4f V (%s)", state.calibStep,
                cfg.phCalibVoltage[idx], autoReady ? "อัตโนมัติ" : "สั่งเอง");
       logInfo(msg);
@@ -843,15 +854,22 @@ void processCalibration() {
   // ── ขั้นที่ 4: คำนวณและบันทึก ──
   else if (state.calibStep >= 4) {
     calculatePHCalibration();
-    cfg.calibrationCount++;
+
+    if (cfg.isPhCalibrated) {
+      cfg.calibrationCount++;          // นับเฉพาะครั้งที่ผ่านจริง
+      showMessage("CALIBRATION", "COMPLETED!");
+      logInfo("=== Calibration สำเร็จ ===");
+    } else {
+      showMessage("CALIB FAILED", "please retry");
+      logWarning("=== Calibration ไม่ผ่าน ต้องทำใหม่ ===");
+    }
     saveConfig();
+    vTaskDelay(pdMS_TO_TICKS(2500));
 
-    showMessage("CALIBRATION", "COMPLETED!");
-    logInfo("=== Calibration เสร็จสิ้น ===");
-    vTaskDelay(pdMS_TO_TICKS(2000));
-
-    state.calibMode = false;
-    state.calibStep = 0;
+    state.calibMode  = false;
+    state.calibStep  = 0;
+    gCalibDwellSec   = 0;
+    gCalibStableSec  = 0;
   }
 
   xSemaphoreGive(calibMutex);
@@ -1220,7 +1238,9 @@ void taskSensor(void* pv) {
     float ph   = readPH();
     updateSensorReadings(ph, temp);
 
-    if (isnan(ph) || isnan(temp)) {
+    // นับเฉพาะ pH เท่านั้น — อุณหภูมิใช้แค่แสดงผลกับเก็บ log ไม่ได้เอาไปคำนวณ pH
+    // ถ้านับ temp ด้วย พอ DS18B20 หลุดสายระบบจะหยุดฉุกเฉินทั้งที่ยังคุม pH ได้ปกติ
+    if (isnan(ph)) {
       // ยังไม่ calibrate ก็อ่าน pH ไม่ได้เป็นเรื่องปกติ ไม่นับเป็น error
       if (cfg.isPhCalibrated) {
         state.sensorErrorCount++;

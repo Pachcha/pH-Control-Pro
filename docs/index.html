@@ -273,6 +273,8 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
       <div class="row"><span class="k">calibrate มาแล้ว</span><span class="v" id="calibCount">–</span></div>
       <div class="row"><span class="k">จุดที่เก็บได้ (V)</span><span class="v" id="calibPts" style="font-size:.78rem">–</span></div>
       <div class="row"><span class="k">ความไวหัววัด</span><span class="v" id="calibSens">–</span></div>
+      <div class="row"><span class="k">ความชัน กรด / ด่าง</span><span class="v" id="calibSlopes" style="font-size:.78rem">–</span></div>
+      <div class="row"><span class="k">อุณหภูมิตอน calibrate</span><span class="v" id="calibTemp">–</span></div>
     </div>
   </div>
 
@@ -619,14 +621,28 @@ function renderStatus(d){
   const pts = [d.calibV1, d.calibV2, d.calibV3].filter(v => v != null && v > 0);
   $("calibPts").textContent = pts.length ? pts.map(v => Number(v).toFixed(3)).join(" / ") : "–";
 
-  // ทฤษฎี Nernst ที่ 25°C = 59 mV/pH แม้ไม่มีวงจรขยาย ต่ำกว่านี้มาก = หัววัดมีปัญหา
+  // ทฤษฎี Nernst ที่ 25°C = 59.16 mV/pH แม้ไม่มีวงจรขยาย ต่ำกว่านี้มาก = หัววัดมีปัญหา
   const mvph = Number(d.calibMvPerPh);
+  const pct  = Number(d.nernstPct);
   const sens = $("calibSens");
   if (!mvph) { sens.textContent = "–"; sens.style.color = ""; }
   else {
-    sens.textContent = mvph.toFixed(1) + " mV/pH";
+    sens.textContent = mvph.toFixed(1) + " mV/pH" + (pct ? "  (" + pct.toFixed(0) + "% ของ Nernst)" : "");
     sens.style.color = mvph < 40 ? "var(--red)" : mvph < 55 ? "var(--amber)" : "var(--emerald)";
   }
+
+  // ความชันสองฝั่ง — ต่างกันมากแปลว่าหัววัดเสื่อมหรือเก็บค่าเพี้ยน
+  const sa = Number(d.slopeAcidMv), sb = Number(d.slopeBaseMv);
+  const slEl = $("calibSlopes");
+  if (!sa || !sb) { slEl.textContent = "–"; slEl.style.color = ""; }
+  else {
+    const asym = Math.abs(sa - sb) / Math.max(sa, sb);
+    slEl.textContent = sa.toFixed(1) + " / " + sb.toFixed(1) + " mV/pH  (ต่าง " + (asym*100).toFixed(0) + "%)";
+    slEl.style.color = asym > 0.30 ? "var(--red)" : asym > 0.15 ? "var(--amber)" : "var(--emerald)";
+  }
+
+  $("calibTemp").textContent = d.calibTempC != null && d.calibrated
+    ? Number(d.calibTempC).toFixed(1) + " °C" : "–";
 
   renderCalibPanel(d, volt);
   setPill($("modePill"), !!d.autoMode, "อัตโนมัติ", "สั่งมือ");

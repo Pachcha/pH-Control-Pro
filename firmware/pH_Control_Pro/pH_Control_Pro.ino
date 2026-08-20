@@ -104,6 +104,12 @@
 //   หัววัดที่ยังไหลเข้าหาค่าจริงจะยังเห็นเป็นแนวโน้มอยู่ เราจึงตัดสิน
 //   ความนิ่งจากสัญญาณที่กรองแล้วได้ = "นิ่ง" แปลว่าหยุดไหลจริง ไม่ใช่แค่ noise น้อย
 #define PH_FILTER_TAU_MS   15000     // ค่าคงที่เวลาของตัวกรอง
+
+// ── การเก็บตัวอย่าง ADC ──
+#define MAINS_PERIOD_MS    20        // ไฟบ้านไทย 50 Hz = คาบละ 20 ms
+#define ADC_SAMPLE_GAP_MS  2         // ระยะห่างเป้าหมายระหว่างตัวอย่าง
+#define PH_SAMPLES_NORMAL  50        // ตอนทำงานปกติ (~100 ms = 5 คาบ)
+#define PH_SAMPLES_CALIB   50        // ตอน calibrate ต้องแม่นที่สุด
 #define PH_STABLE_WINDOW   30        // จำนวนตัวอย่างที่ใช้ตัดสินว่านิ่ง
 #define PH_STABLE_MV       0.0015    // เกณฑ์นิ่ง 1.5 mV — เข้มได้เพราะวัดบนสัญญาณที่กรองแล้ว
 #define CALIB_MIN_R2       90.0      // R² ต่ำกว่านี้ถือว่า calibrate ไม่ผ่าน
@@ -115,6 +121,8 @@
 //   ทฤษฎี Nernst ที่ 25°C ให้ 59 mV/pH แม้ไม่มีวงจรขยาย = 355 mV ในช่วง pH 4.00-10.01
 //   ตั้งเกณฑ์ขั้นต่ำไว้ต่ำกว่านั้นมาก เพื่อจับเฉพาะกรณีที่พังจริงๆ
 #define CALIB_MIN_SPAN_V   0.20      // ช่วงแรงดันขั้นต่ำระหว่างจุดแรกกับจุดสุดท้าย
+#define NERNST_MV_PER_PH   59.16     // ทฤษฎี Nernst ที่ 25 องศา
+#define CALIB_MAX_ASYMMETRY 0.30     // ความชันสองฝั่งต่างกันได้ไม่เกิน 30%
 #define CALIB_PH_RANGE     (CALIB_PH_3 - CALIB_PH_1)
 
 #define WDT_TIMEOUT_SEC    30
@@ -134,7 +142,7 @@
 
 // ── EEPROM ──
 #define EEPROM_MAGIC       0x50484331UL   // "PHC1"
-#define EEPROM_VERSION     1
+#define EEPROM_VERSION     2   // v2: เพิ่ม calibTempC + เปลี่ยนไปใช้ piecewise
 
 // ── จังหวะส่งข้อมูลขึ้น Firebase ──
 #define FB_STATUS_ACTIVE_MS    5000
@@ -178,10 +186,11 @@ struct Config {
   uint16_t version;
   uint16_t _pad0;
 
-  float    phSlope;             // pH = slope * โวลต์ + intercept
-  float    phIntercept;
+  float    phSlope;             // จาก linear fit เส้นเดียว — เก็บไว้ใช้เป็นตัววัดคุณภาพเท่านั้น
+  float    phIntercept;         // ไม่ได้ใช้คำนวณ pH แล้ว (ใช้ piecewise แทน)
   float    phCalibVoltage[3];   // โวลต์ที่วัดได้ตอน calibrate แต่ละจุด
   float    phR2;                // ความแม่นของเส้น calibration (%)
+  float    calibTempC;          // อุณหภูมิขณะ calibrate — ใช้ชดเชยตามสมการ Nernst
   int32_t  calibrationCount;
   uint8_t  isPhCalibrated;
   uint8_t  autoMode;
@@ -363,24 +372,49 @@ float readTemperature() {
 }
 
 // อ่าน pH: เก็บหลายตัวอย่าง → ตัดค่าสุดขอบ 20% → หา median → แปลงเป็น pH
-// อ่านแรงดันดิบจากขา pH: เก็บหลายตัวอย่าง ตัดค่าสุดขอบ 20% แล้วหา median
-// ADC ของ ESP32 สัญญาณรบกวนสูง อ่านครั้งเดียวแกว่งเป็นสิบมิลลิโวลต์
+// อ่านแรงดันจากขา pH
+//
+// ★ ใช้ analogReadMilliVolts() ไม่ใช่ analogRead()
+//   ADC ของ ESP32 ไม่เป็นเชิงเส้น (โค้งเป็นรูปตัว S) และคลาดเคลื่อนได้ ±6%
+//   ระหว่างชิปแต่ละตัว สูตรเดิม raw*(3.3/4095) สมมติว่าเป็นเชิงเส้นและ
+//   แรงดันอ้างอิงเท่ากับ 3.3V เป๊ะ ซึ่งผิดทั้งคู่
+//   analogReadMilliVolts() อ่านค่าสอบเทียบจาก eFuse ของชิปมาชดเชยความโค้งให้
+//   สำคัญมากเพราะเราฟิตเส้นตรงกับแรงดัน ความโค้งของ ADC จะกลายเป็น
+//   ความคลาดเคลื่อนของ pH ที่หนักสุดตรงกลางช่วง คือย่าน pH 7 พอดี
+//
+// ★ เก็บตัวอย่างให้ครอบคลุมจำนวนเต็มคาบของไฟบ้าน (50 Hz = 20 ms)
+//   การเฉลี่ยครบคาบทำให้ hum จากไฟบ้านหักล้างกันเองเกือบหมด
+//   แล้วใช้ trimmed mean แทน median — ได้ทั้งการตัด outlier และการลด
+//   สัญญาณรบกวนตาม sqrt(N) (median ลด noise ได้แย่กว่า mean ราว 25%)
 float readPhVoltage(int samples) {
-  const int MAXS = 24;
+  const int MAXS = 64;
   if (samples > MAXS) samples = MAXS;
+  if (samples < 4)    samples = 4;
+
+  // กระจายตัวอย่างให้เต็มจำนวนเต็มคาบของไฟบ้าน
+  int cycles    = (samples * ADC_SAMPLE_GAP_MS + MAINS_PERIOD_MS - 1) / MAINS_PERIOD_MS;
+  if (cycles < 1) cycles = 1;
+  int windowMs  = cycles * MAINS_PERIOD_MS;
+  int gapMs     = windowMs / samples;
+  if (gapMs < 1) gapMs = 1;
 
   float v[MAXS];
   int   n = 0;
   for (int i = 0; i < samples; i++) {
-    int raw = analogRead(PH_PIN);
-    if (raw > 10 && raw < 4090) v[n++] = raw * (3.3 / 4095.0);
-    vTaskDelay(pdMS_TO_TICKS(5));
+    uint32_t mv = analogReadMilliVolts(PH_PIN);
+    if (mv > 10 && mv < 3250) v[n++] = mv / 1000.0f;
+    vTaskDelay(pdMS_TO_TICKS(gapMs));
   }
   if (n < samples / 2) return NAN;
 
+  // ตัดค่าสุดขอบ 20% บนล่าง แล้วเฉลี่ยส่วนที่เหลือ
   std::sort(v, v + n);
   int lo = n / 5, hi = n - lo;
-  return getMedianValue(v + lo, hi - lo);
+  if (hi <= lo) { lo = 0; hi = n; }
+
+  float sum = 0;
+  for (int i = lo; i < hi; i++) sum += v[i];
+  return sum / (hi - lo);
 }
 
 // กรองสัญญาณ + ติดตามว่านิ่งแล้วหรือยัง
@@ -437,9 +471,42 @@ void trackPhVoltage(float raw) {
   gPhStable  = sqrt(var / PH_STABLE_WINDOW) < PH_STABLE_MV;
 }
 
-float readPH() {
+// แปลงแรงดันเป็น pH แบบแบ่งช่วง (piecewise) พร้อมชดเชยอุณหภูมิตามสมการ Nernst
+//
+// ★ ทำไมต้องแบ่งช่วง: หัววัด pH จริงมีความชันฝั่งกรดกับฝั่งด่างไม่เท่ากัน
+//   ต่างกันได้ 2-5% การฟิตเส้นตรงเส้นเดียวจึงไม่ผ่านจุด calibration สักจุด
+//   เกิดความคลาดเคลื่อนกลางช่วงราว 0.05-0.1 pH
+//   แบ่งสองช่วงแล้วเส้นจะผ่านทั้ง 3 จุดพอดีเป๊ะ (เครื่องวัดมืออาชีพทำแบบนี้)
+//
+// ★ จุดกลางเราใช้ buffer pH 7.00 ซึ่งเป็นจุด isopotential ของหัววัดพอดี
+//   phCalibVoltage[1] จึงเป็น V_iso โดยตรง ไม่ต้องฟิตหา
+//
+// ★ ชดเชยอุณหภูมิ: ความชันแปรตามอุณหภูมิสัมบูรณ์
+//   S(T) = S(T_cal) x (273.15 + T) / (273.15 + T_cal)
+float voltageToPH(float v, float tempC) {
+  if (isnan(v) || !cfg.isPhCalibrated) return NAN;
+
+  const float vIso  = cfg.phCalibVoltage[1];
+  float       sAcid = (cfg.phCalibVoltage[0] - vIso) / (CALIB_PH_2 - CALIB_PH_1);  // โวลต์ต่อ pH
+  float       sBase = (vIso - cfg.phCalibVoltage[2]) / (CALIB_PH_3 - CALIB_PH_2);
+
+  if (fabs(sAcid) < 1e-6 || fabs(sBase) < 1e-6) return NAN;
+
+  // เลือกช่วง: ลองด้วยฝั่งกรดก่อน ถ้าได้ผลเกิน pH 7 แปลว่าจริงๆ อยู่ฝั่งด่าง
+  // เขียนแบบนี้ทนแม้หัววัดต่อกลับขั้ว (แรงดันเพิ่มขึ้นตาม pH)
+  float s = ((vIso - v) / sAcid > 0.0f) ? sBase : sAcid;
+
+  // ชดเชยอุณหภูมิ — อ่านอุณหภูมิไม่ได้ก็ใช้ค่าตอน calibrate = ไม่ชดเชย ไม่พัง
+  float tCal = isnan(cfg.calibTempC) ? 25.0f : cfg.calibTempC;
+  float tNow = isnan(tempC)          ? tCal  : tempC;
+  s *= (273.15f + tNow) / (273.15f + tCal);
+
+  return CALIB_PH_2 + (vIso - v) / s;
+}
+
+float readPH(float tempC) {
   for (int retry = 0; retry < MAX_SENSOR_RETRIES; retry++) {
-    float v = readPhVoltage(15);
+    float v = readPhVoltage(PH_SAMPLES_NORMAL);
     trackPhVoltage(v);
 
     if (!isnan(v)) {
@@ -448,7 +515,7 @@ float readPH() {
 
       // ใช้ค่าที่ผ่านตัวกรองแล้ว ไม่ใช่ค่าดิบ — pH ในถังเปลี่ยนช้า
       // การเฉลี่ยย้อนหลังไม่เสียข้อมูล แต่ตัด noise ได้เยอะ
-      float phValue = cfg.phSlope * gPhVoltage + cfg.phIntercept;
+      float phValue = voltageToPH(gPhVoltage, tempC);
       if (phValue >= 0.0 && phValue <= 14.0) return phValue;
     }
 
@@ -665,6 +732,7 @@ void loadDefaults() {
   cfg.version          = EEPROM_VERSION;
   cfg.phSlope          = -3.5;      // ค่าเริ่มต้นคร่าวๆ ต้อง calibrate จริงอยู่ดี
   cfg.phIntercept      = 15.0;
+  cfg.calibTempC       = 25.0;
   cfg.phR2             = 0.0;
   cfg.isPhCalibrated   = 0;
   cfg.autoMode         = 0;         // เริ่มต้นปิดไว้ก่อน กันจ่ายสารตั้งแต่ยังไม่ calibrate
@@ -749,6 +817,32 @@ void calculatePHCalibration() {
     return;
   }
 
+  // ── ด่านที่ 3: ความชันสองฝั่งต้องไม่ต่างกันมากเกินไป ──
+  // หัววัดที่ดีมีความชันฝั่งกรดกับด่างต่างกันไม่กี่เปอร์เซ็นต์
+  // ถ้าต่างกันมาก แปลว่าหัววัดเสื่อม หรือมีจุดใดจุดหนึ่งเก็บค่าเพี้ยน
+  float sAcidMv = fabs(v1 - v2) * 1000.0 / (CALIB_PH_2 - CALIB_PH_1);
+  float sBaseMv = fabs(v2 - v3) * 1000.0 / (CALIB_PH_3 - CALIB_PH_2);
+  float bigger  = max(sAcidMv, sBaseMv);
+  float asym    = (bigger > 0) ? fabs(sAcidMv - sBaseMv) / bigger : 1.0;
+
+  char detail2[ALERT_MSG_LEN];
+  snprintf(detail2, sizeof(detail2), "ความชัน: ฝั่งกรด %.1f mV/pH  ฝั่งด่าง %.1f mV/pH  ต่างกัน %.0f%%",
+           sAcidMv, sBaseMv, asym * 100.0);
+  logInfo(detail2);
+  sendAlert(detail2, 0);
+
+  if (asym > CALIB_MAX_ASYMMETRY) {
+    char r[40];
+    snprintf(r, sizeof(r), "asym %.0f%%", asym * 100.0);
+    calibFailed(r);
+    sendAlert("ความชันสองฝั่งต่างกันมากเกินไป — หัววัดเสื่อม หรือมีจุดที่เก็บค่าเพี้ยน", 2);
+    return;
+  }
+
+  // เก็บอุณหภูมิขณะ calibrate ไว้ใช้ชดเชยตอนวัดจริง
+  float tCal = readTemperature();
+  cfg.calibTempC = isnan(tCal) ? 25.0 : tCal;
+
   float sum_x = 0, sum_y = 0, sum_xy = 0, sum_x2 = 0;
   for (int i = 0; i < 3; i++) {
     sum_x  += cfg.phCalibVoltage[i];
@@ -784,8 +878,8 @@ void calculatePHCalibration() {
   cfg.isPhCalibrated = (cfg.phR2 > CALIB_MIN_R2) ? 1 : 0;
 
   char msg[ALERT_MSG_LEN];
-  snprintf(msg, sizeof(msg), "Calibration: slope=%.2f pH/V  R2=%.1f%%  %.1f mV/pH -> %s",
-           cfg.phSlope, cfg.phR2, mvPerPh,
+  snprintf(msg, sizeof(msg), "Calibration: R2=%.1f%%  %.1f mV/pH (%.0f%% ของ Nernst)  ที่ %.1fC -> %s",
+           cfg.phR2, mvPerPh, mvPerPh / NERNST_MV_PER_PH * 100.0, cfg.calibTempC,
            cfg.isPhCalibrated ? "ผ่าน" : "ไม่ผ่าน (R2 ต่ำ)");
   logInfo(msg);
   sendAlert(msg, cfg.isPhCalibrated ? 0 : 2);
@@ -826,7 +920,7 @@ void processCalibration() {
     const char* stepNames[3] = {"pH STEP 1/3", "pH STEP 2/3", "pH STEP 3/3"};
     int idx = state.calibStep - 1;
 
-    float voltage = readPhVoltage(12);
+    float voltage = readPhVoltage(PH_SAMPLES_CALIB);
     trackPhVoltage(voltage);
 
     // สลับข้อความบรรทัดบนทุก 2 วิ ให้เห็นทั้งเลขขั้นและน้ำยาที่ต้องใช้
@@ -1155,6 +1249,10 @@ bool firebaseUploadStatus() {
   gJson.set("calibV3",          (double)cfg.phCalibVoltage[2]);
   gJson.set("calibSpanMv",      (double)(fabs(cfg.phCalibVoltage[2] - cfg.phCalibVoltage[0]) * 1000.0));
   gJson.set("calibMvPerPh",     (double)(fabs(cfg.phCalibVoltage[2] - cfg.phCalibVoltage[0]) * 1000.0 / CALIB_PH_RANGE));
+  gJson.set("calibTempC",       (double)cfg.calibTempC);
+  gJson.set("slopeAcidMv",      (double)(fabs(cfg.phCalibVoltage[0] - cfg.phCalibVoltage[1]) * 1000.0 / (CALIB_PH_2 - CALIB_PH_1)));
+  gJson.set("slopeBaseMv",      (double)(fabs(cfg.phCalibVoltage[1] - cfg.phCalibVoltage[2]) * 1000.0 / (CALIB_PH_3 - CALIB_PH_2)));
+  gJson.set("nernstPct",        (double)(fabs(cfg.phCalibVoltage[2] - cfg.phCalibVoltage[0]) * 1000.0 / CALIB_PH_RANGE / NERNST_MV_PER_PH * 100.0));
   gJson.set("temp",             isnan(temp) ? -127.0 : (double)temp);
   gJson.set("phValid",          !isnan(ph));
   gJson.set("dosing",           isDosingInProgress());
@@ -1305,7 +1403,7 @@ void taskSensor(void* pv) {
     }
 
     float temp = readTemperature();
-    float ph   = readPH();
+    float ph   = readPH(temp);   // ส่งอุณหภูมิเข้าไปชดเชยตาม Nernst
     updateSensorReadings(ph, temp);
 
     // นับเฉพาะ pH เท่านั้น — อุณหภูมิใช้แค่แสดงผลกับเก็บ log ไม่ได้เอาไปคำนวณ pH

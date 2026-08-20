@@ -41,14 +41,29 @@ body{
 .wrap{max-width:1200px;margin:0 auto;}
 
 /* ── หัวเรื่อง ── */
-header{
+/* หัวเรื่อง + แถบแท็บ ติดบนด้วยกันเป็นก้อนเดียว จะได้เห็นสถานะบอร์ดตลอด */
+.topbar{
   position:sticky; top:0; z-index:30;
-  display:flex; align-items:center; justify-content:space-between; gap:10px;
   background:var(--bg);
-  margin:0 calc(var(--pad) * -1) 16px;
-  padding:calc(env(safe-area-inset-top) + 12px) var(--pad) 11px;
+  margin:0 calc(var(--pad) * -1) 14px;
+  padding:calc(env(safe-area-inset-top) + 12px) var(--pad) 0;
   border-bottom:1px solid var(--line);
 }
+header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:11px;}
+
+.tabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab{
+  flex:none; background:none; border:none; border-bottom:2px solid transparent;
+  color:var(--txt-3); font-family:inherit; font-size:.82rem; font-weight:700;
+  padding:10px 13px; cursor:pointer; white-space:nowrap;
+  touch-action:manipulation; transition:color .15s, border-color .15s;
+}
+.tab:hover{color:var(--txt-2);}
+.tab.active{color:var(--txt);border-bottom-color:var(--blue);}
+
+.pane{display:none;}
+.pane.active{display:block;}
 h1{font-size:1.25rem;font-weight:800;letter-spacing:-.02em;}
 h1 small{display:block;font-size:.7rem;font-weight:500;color:var(--txt-3);letter-spacing:.06em;text-transform:uppercase;margin-top:2px;}
 .conn{display:flex;align-items:center;gap:7px;font-size:.78rem;font-weight:600;
@@ -187,24 +202,25 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
   .gauge{width:180px;height:180px;}
   .gauge-val{font-size:2.6rem;}
   .row{padding:8px 0;}
-
-  /* บนมือถือเอาแผงควบคุมขึ้นมาก่อน จะได้ไม่ต้องเลื่อนยาวกว่าจะถึงปุ่มที่ใช้บ่อย */
-  .grid > .card{order:5;}
-  .calib-panel{order:0;}
-  .grid > .card.m-gauge{order:1;}
-  .grid > .card.m-status{order:2;}
-  .grid > .card.m-control{order:3;}
-  .grid > .card.m-relay{order:4;}
+  .tab{font-size:.78rem;padding:9px 11px;}
 }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<header>
-  <h1>pH Control Pro<small>ระบบควบคุม pH อัตโนมัติ</small></h1>
-  <div class="conn"><span class="dot" id="connDot"></span><span id="connTxt">กำลังเชื่อมต่อ…</span></div>
-</header>
+<div class="topbar">
+  <header>
+    <h1>pH Control Pro<small>ระบบควบคุม pH อัตโนมัติ</small></h1>
+    <div class="conn"><span class="dot" id="connDot"></span><span id="connTxt">กำลังเชื่อมต่อ…</span></div>
+  </header>
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview">📊 ภาพรวม</button>
+    <button class="tab"        data-tab="control">🎛️ ควบคุม</button>
+    <button class="tab"        data-tab="sensor">🧪 เซนเซอร์</button>
+    <button class="tab"        data-tab="system">🖥️ ระบบ</button>
+  </nav>
+</div>
 
 <div class="setup" id="setupBox" style="display:none">
   <h2>⚙️ ยังไม่ได้ตั้งค่า Firebase</h2>
@@ -225,6 +241,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
   <div class="calib-hint">ระบบเก็บค่าให้เองเมื่อนิ่งพอ · กดปุ่มด้านบนหรือปุ่ม BOOT ถ้าอยากเก็บทันที</div>
 </div>
 
+<section class="pane active" id="pane-overview">
 <div class="grid">
 
   <!-- เกจ pH -->
@@ -261,29 +278,18 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
     </div>
   </div>
 
-  <!-- รีเลย์ -->
-  <div class="card m-relay">
-    <div class="card-title">🔧 สถานะรีเลย์</div>
-    <div class="rows">
-      <div class="row"><span class="k">ปั๊ม pH Up</span><span class="v"><span class="pill off" id="rPhUp">ปิด</span></span></div>
-      <div class="row"><span class="k">ปั๊ม pH Down</span><span class="v"><span class="pill off" id="rPhDown">ปิด</span></span></div>
-      <div class="row"><span class="k">เครื่องกวน</span><span class="v"><span class="pill off" id="rMixer">ปิด</span></span></div>
-      <div class="row"><span class="k">Calibration</span><span class="v"><span class="pill off" id="calibPill">–</span></span></div>
-      <div class="row"><span class="k">ความแม่น (R²)</span><span class="v" id="r2Val">–</span></div>
-      <div class="row"><span class="k">calibrate มาแล้ว</span><span class="v" id="calibCount">–</span></div>
-      <div class="row"><span class="k">จุดที่เก็บได้ (V)</span><span class="v" id="calibPts" style="font-size:.78rem">–</span></div>
-      <div class="row"><span class="k">ความไวหัววัด</span><span class="v" id="calibSens">–</span></div>
-      <div class="row"><span class="k">ความชัน กรด / ด่าง</span><span class="v" id="calibSlopes" style="font-size:.78rem">–</span></div>
-      <div class="row"><span class="k">อุณหภูมิตอน calibrate</span><span class="v" id="calibTemp">–</span></div>
-    </div>
-  </div>
-
   <!-- กราฟ -->
   <div class="card wide">
     <div class="card-title">📊 แนวโน้มค่า pH</div>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
     <div class="chart-empty" id="chartEmpty">ยังไม่มีข้อมูลย้อนหลัง</div>
   </div>
+
+</div>
+</section>
+
+<section class="pane" id="pane-control">
+<div class="grid">
 
   <!-- ควบคุม -->
   <div class="card m-control">
@@ -334,6 +340,42 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
     <button class="btn amber" id="btnSave">💾 บันทึกค่าตั้ง</button>
   </div>
 
+</div>
+</section>
+
+<section class="pane" id="pane-sensor">
+<div class="grid">
+
+  <!-- สถานะรีเลย์ -->
+  <div class="card">
+    <div class="card-title">🔧 สถานะรีเลย์</div>
+    <div class="rows">
+      <div class="row"><span class="k">ปั๊ม pH Up</span><span class="v"><span class="pill off" id="rPhUp">ปิด</span></span></div>
+      <div class="row"><span class="k">ปั๊ม pH Down</span><span class="v"><span class="pill off" id="rPhDown">ปิด</span></span></div>
+      <div class="row"><span class="k">เครื่องกวน</span><span class="v"><span class="pill off" id="rMixer">ปิด</span></span></div>
+    </div>
+  </div>
+
+  <!-- ข้อมูล calibration -->
+  <div class="card">
+    <div class="card-title">🎯 Calibration</div>
+    <div class="rows">
+      <div class="row"><span class="k">Calibration</span><span class="v"><span class="pill off" id="calibPill">–</span></span></div>
+      <div class="row"><span class="k">ความแม่น (R²)</span><span class="v" id="r2Val">–</span></div>
+      <div class="row"><span class="k">calibrate มาแล้ว</span><span class="v" id="calibCount">–</span></div>
+      <div class="row"><span class="k">จุดที่เก็บได้ (V)</span><span class="v" id="calibPts" style="font-size:.78rem">–</span></div>
+      <div class="row"><span class="k">ความไวหัววัด</span><span class="v" id="calibSens">–</span></div>
+      <div class="row"><span class="k">ความชัน กรด / ด่าง</span><span class="v" id="calibSlopes" style="font-size:.78rem">–</span></div>
+      <div class="row"><span class="k">อุณหภูมิตอน calibrate</span><span class="v" id="calibTemp">–</span></div>
+    </div>
+  </div>
+
+</div>
+</section>
+
+<section class="pane" id="pane-system">
+<div class="grid">
+
   <!-- อุปกรณ์ -->
   <div class="card wide">
     <div class="card-title">🖥️ อุปกรณ์</div>
@@ -362,6 +404,8 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
     </div>
   </div>
 
+</div>
+</section>
 </div>
 
 <footer>pH Control Pro • ESP32 + Firebase Realtime Database</footer>
@@ -482,6 +526,9 @@ function drawChart(){
 
   if (phHistory.length < 2) { cv.style.display = "none"; empty.style.display = "block"; return; }
   cv.style.display = "block"; empty.style.display = "none";
+
+  // อยู่ในแท็บที่ถูกซ่อน ความกว้างจะเป็น 0 วาดไปก็เพี้ยน รอให้เปิดแท็บก่อน
+  if (cv.clientWidth === 0) return;
 
   const dpr = window.devicePixelRatio || 1;
   const W = Math.round(cv.clientWidth), H = 200;
@@ -827,6 +874,28 @@ function refreshBanner(){
 
   setBanner("", "");
 }
+
+// ════════════ แท็บ ════════════
+function showTab(name){
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".pane").forEach(p => p.classList.toggle("active", p.id === "pane-" + name));
+
+  // กราฟอยู่ในแท็บภาพรวม ตอนถูกซ่อน canvas กว้าง 0 ต้องสั่งวาดใหม่เมื่อเปิดแท็บ
+  if (name === "overview") scheduleDraw();
+
+  try { localStorage.setItem("phTab", name); } catch (e) {}
+}
+
+document.getElementById("tabs").addEventListener("click", e => {
+  const btn = e.target.closest(".tab");
+  if (btn) showTab(btn.dataset.tab);
+});
+
+// จำแท็บที่เปิดค้างไว้ เผลอ refresh แล้วไม่ต้องกดกลับมาใหม่
+try {
+  const saved = localStorage.getItem("phTab");
+  if (saved && document.getElementById("pane-" + saved)) showTab(saved);
+} catch (e) {}
 
 // ════════════ เขียนคำสั่งกลับไปที่อุปกรณ์ ════════════
 function send(path, value, logMsg){

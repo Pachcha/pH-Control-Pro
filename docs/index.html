@@ -653,7 +653,8 @@ function renderStatus(d){
   updateLiveState();   // คุมจุดสถานะ + แถบเตือนไว้ที่เดียว
 }
 
-const BUFFERS = ["pH 4.01", "pH 6.86", "pH 9.18"];
+// ต้องตรงกับ CALIB_PH_1/2/3 ในเฟิร์มแวร์
+const BUFFERS = ["pH 4.00", "pH 7.00", "pH 10.01"];
 
 function renderCalibPanel(d, volt){
   const panel = $("calibPanel");
@@ -810,7 +811,7 @@ function bindButton(id, path, confirmMsg, logMsg){
 bindButton("btnUp",     "phUp",       "สั่งจ่าย pH Up ทันทีเลยไหม?",   "สั่งจ่าย pH Up");
 bindButton("btnDown",   "phDown",     "สั่งจ่าย pH Down ทันทีเลยไหม?", "สั่งจ่าย pH Down");
 bindButton("btnCalib",  "startCalib",
-  "เริ่ม calibrate 3 จุด?\n\nเตรียมน้ำยา buffer pH 4.01 / 6.86 / 9.18 ไว้ให้พร้อม\nแต่ละขั้นกดปุ่ม BOOT ที่บอร์ดเพื่อเก็บค่า (หรือรอ 45 วินาที)",
+  "เริ่ม calibrate 3 จุด?\n\nเตรียมน้ำยา buffer pH 4.00 / 7.00 / 10.01 ไว้ให้พร้อม\n\nจุ่มหัววัดแล้วรอ ระบบจะเก็บค่าให้เองเมื่อนิ่งพอ\nล้างหัววัดด้วยน้ำสะอาดทุกครั้งก่อนเปลี่ยนน้ำยา",
   "สั่งเริ่ม calibrate");
 bindButton("btnReboot", "reboot",     "รีบูตอุปกรณ์เลยไหม?",           "สั่งรีบูตอุปกรณ์");
 bindButton("btnCapture","calibCapture", null,                          "สั่งเก็บค่า calibration จุดนี้");

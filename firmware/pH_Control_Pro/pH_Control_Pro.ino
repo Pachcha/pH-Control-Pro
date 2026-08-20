@@ -154,6 +154,17 @@
 // ยอด free heap รวมเยอะไม่ได้แปลว่าจองได้ ถ้าหน่วยความจำแตกเป็นเสี่ยงๆ
 // ต่ำกว่านี้ให้ข้ามการส่งรอบนั้นไป ดีกว่าปล่อยให้ SSL พังแล้วหลุดทั้งเส้น
 #define FB_MIN_FREE_BLOCK      24000
+
+// ═══ ระบบเฝ้าระวังเพื่อให้ทำงานต่อเนื่อง 24 ชั่วโมง ═══
+// หลักการ: อย่าปล่อยให้ระบบอยู่ในสภาพ "ไม่ตาย แต่ก็ไม่ทำงาน" นานๆ
+// ถ้ากู้เองไม่ได้ภายในเวลาที่กำหนด ให้รีบูตดีกว่าค้างเงียบๆ ไปทั้งคืน
+#define WIFI_DEAD_REBOOT_MS   900000UL   // WiFi ต่อไม่ติดนานเกิน 15 นาที = รีบูต
+#define FB_REINIT_AFTER_MS    600000UL   // Firebase ไม่พร้อมเกิน 10 นาที = init ใหม่
+#define FB_DEAD_REBOOT_MS    1200000UL   // init ใหม่แล้วยังไม่พร้อมอีกจน 20 นาที = รีบูต
+#define LOWMEM_REBOOT_MS      300000UL   // หน่วยความจำต่อเนื่องต่ำค้างเกิน 5 นาที = รีบูต
+#define STREAM_DEAD_MS        120000UL   // stream หลุดเกิน 2 นาที = เปิดใหม่
+#define TASK_BEAT_TIMEOUT_MS   60000UL   // task ไหนไม่เต้นเกิน 1 นาที = รีบูต
+#define DAILY_REBOOT_MS     86400000UL   // รีบูตกันเหนียวทุก 24 ชม. (ใส่ 0 = ปิด)
 #define FB_STATUS_IDLE_MS      15000
 #define FB_HISTORY_MS          300000UL   // เก็บกราฟย้อนหลังทุก 5 นาที
 #define FB_NOT_READY_BACKOFF   5000
@@ -256,6 +267,23 @@ volatile bool     gWiFiConnected  = false;
 volatile bool     gFirebaseReady  = false;
 volatile bool     gSignUpOK       = false;
 volatile bool     gStreamStarted  = false;
+
+// ── ชีพจรของแต่ละ task ──
+// WDT จับได้เฉพาะ task ที่ "ค้าง" แต่จับไม่ได้ถ้า task "ตายหายไปเลย"
+// (เช่นโดน stack overflow ฆ่า) เพราะมันถูกถอดออกจาก WDT ไปด้วย
+// ชีพจรนี้จึงเป็นตาข่ายชั้นที่สอง
+#define TASK_COUNT 4
+enum { T_SENSOR = 0, T_CONTROL, T_DISPLAY, T_FIREBASE };
+static const char* kTaskName[TASK_COUNT] = {"Sensor", "Control", "Display", "Firebase"};
+volatile unsigned long gTaskBeat[TASK_COUNT] = {0};
+
+// เก็บข้ามการรีบูต (อยู่รอดถ้าเป็น soft reset แต่หายเมื่อไฟดับ)
+RTC_NOINIT_ATTR uint32_t gRtcMagic;
+RTC_NOINIT_ATTR uint32_t gRebootCount;
+RTC_NOINIT_ATTR char     gLastRebootReason[128];
+#define RTC_MAGIC 0x50484252UL   // "PHBR"
+
+char gResetReason[64] = "unknown";
 volatile uint32_t gFbSendCount    = 0;
 volatile uint32_t gFbFailCount    = 0;
 
@@ -332,6 +360,67 @@ void logMessage(const char* level, const char* message) {
 void logInfo(const char* m)    { logMessage("INFO",  m); }
 void logWarning(const char* m) { logMessage("WARN",  m); }
 void logError(const char* m)   { logMessage("ERROR", m); }
+
+// ============================================================================
+//  ระบบเฝ้าระวัง
+// ============================================================================
+
+// คัดลอกสตริงโดยไม่ผ่ากลางตัวอักษร UTF-8
+// ภาษาไทยกินตัวละ 3 ไบต์ ตัดผิดที่จะได้ไบต์เสียแล้วขึ้นเป็น "?" บนหน้าเว็บ
+// ไบต์ต่อเนื่องของ UTF-8 มีรูปแบบ 10xxxxxx ให้ถอยจนพ้นมัน
+void copyUtf8(char* dst, size_t cap, const char* src) {
+  size_t n = strlen(src);
+  if (n >= cap) {
+    n = cap - 1;
+    while (n > 0 && ((uint8_t)src[n] & 0xC0) == 0x80) n--;
+  }
+  memcpy(dst, src, n);
+  dst[n] = '\0';
+}
+
+void beat(int taskIndex) {
+  if (taskIndex >= 0 && taskIndex < TASK_COUNT) gTaskBeat[taskIndex] = millis();
+}
+
+// แปลงสาเหตุการรีเซ็ตเป็นข้อความอ่านออก — สำคัญมากกับระบบที่รัน 24 ชม.
+// เพราะถ้ารีบูตเองตอนตีสาม เราต้องรู้ว่าเพราะอะไร
+const char* resetReasonText(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:  return "เปิดไฟใหม่";
+    case ESP_RST_SW:       return "สั่งรีบูตจากโค้ด";
+    case ESP_RST_PANIC:    return "โค้ด crash (panic)";
+    case ESP_RST_INT_WDT:  return "watchdog ระดับ interrupt";
+    case ESP_RST_TASK_WDT: return "watchdog จับ task ค้าง";
+    case ESP_RST_WDT:      return "watchdog อื่น";
+    case ESP_RST_BROWNOUT: return "ไฟตก (brownout)";
+    case ESP_RST_DEEPSLEEP:return "ตื่นจาก deep sleep";
+    case ESP_RST_EXT:      return "รีเซ็ตจากขา EN";
+    default:               return "ไม่ทราบสาเหตุ";
+  }
+}
+
+// รีบูตแบบปลอดภัย — ปิดปั๊มก่อนเสมอ และพยายามบันทึกสาเหตุขึ้น Firebase ให้ทัน
+void safeReboot(const char* reason) {
+  stopAllDosing();
+  logWarning(reason);
+
+  gRtcMagic    = RTC_MAGIC;
+  gRebootCount = gRebootCount + 1;
+  copyUtf8(gLastRebootReason, sizeof(gLastRebootReason), reason);
+
+  // ส่งตรงไม่ผ่านคิว เพราะกำลังจะรีบูต คิวไม่มีใครมาไล่ส่งแล้ว
+  if (Firebase.ready()) {
+    gJson.clear();
+    gJson.set("message",       String("รีบูตอัตโนมัติ: ") + reason);
+    gJson.set("priority",      2);
+    gJson.set("timestamp/.sv", "timestamp");
+    Firebase.RTDB.pushJSON(&fbdo, "/alerts", &gJson);
+    gJson.clear();
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(1500));
+  ESP.restart();
+}
 
 // ============================================================================
 //  LCD — ทุกฟังก์ชันจับ mutex ก่อนเสมอ
@@ -757,7 +846,7 @@ void loadConfig() {
 
   if (valid) {
     cfg = loaded;
-    char msg[128];
+    char msg[ALERT_MSG_LEN];
     snprintf(msg, sizeof(msg), "โหลดค่าตั้งจาก EEPROM: calibrated=%s R2=%.1f%% ครั้งที่ %d",
              cfg.isPhCalibrated ? "ใช่" : "ยัง", cfg.phR2, (int)cfg.calibrationCount);
     logInfo(msg);
@@ -804,7 +893,7 @@ void calculatePHCalibration() {
   sendAlert(detail, 0);
 
   if (spanV < CALIB_MIN_SPAN_V) {
-    char r[40];
+    char r[64];
     snprintf(r, sizeof(r), "span %.0fmV noisy", spanV * 1000.0);
     calibFailed(r);
     sendAlert("หัววัดแทบไม่ตอบสนองต่อ pH — ตรวจข้อต่อ BNC, สภาพหัววัด, ไฟเลี้ยงโมดูล", 2);
@@ -834,7 +923,7 @@ void calculatePHCalibration() {
   sendAlert(detail2, 0);
 
   if (asym > CALIB_MAX_ASYMMETRY) {
-    char r[40];
+    char r[64];
     snprintf(r, sizeof(r), "asym %.0f%%", asym * 100.0);
     calibFailed(r);
     sendAlert("ความชันสองฝั่งต่างกันมากเกินไป — หัววัดเสื่อม หรือมีจุดที่เก็บค่าเพี้ยน", 2);
@@ -1201,18 +1290,8 @@ void sendAlert(const char* msg, uint8_t priority) {
   if (xAlertQueue == NULL) return;
 
   AlertMsg a;
-  size_t n = strlen(msg);
-
-  if (n >= ALERT_MSG_LEN) {
-    // ตัดโดยไม่ผ่ากลางตัวอักษร UTF-8 ไม่งั้นจะได้ไบต์เสียแล้วขึ้นเป็น "?" บนหน้าเว็บ
-    // ไบต์ต่อเนื่องของ UTF-8 มีรูปแบบ 10xxxxxx ให้ถอยจนพ้นมัน
-    n = ALERT_MSG_LEN - 1;
-    while (n > 0 && ((uint8_t)msg[n] & 0xC0) == 0x80) n--;
-  }
-
-  memcpy(a.message, msg, n);
-  a.message[n] = '\0';
-  a.priority   = priority;
+  copyUtf8(a.message, ALERT_MSG_LEN, msg);
+  a.priority = priority;
   xQueueSend(xAlertQueue, &a, pdMS_TO_TICKS(50));
 }
 
@@ -1284,6 +1363,9 @@ bool firebaseUploadStatus() {
   gJson.set("uptimeMin",        (int)(millis() / 60000));
   gJson.set("wifiRSSI",         WiFi.RSSI());
   gJson.set("fwVersion",        FW_VERSION);
+  gJson.set("resetReason",      gResetReason);
+  gJson.set("rebootCount",      (int)gRebootCount);
+  gJson.set("lastRebootReason", gLastRebootReason[0] ? gLastRebootReason : "-");
   gJson.set("timestamp/.sv",    "timestamp");
 
   bool ok = Firebase.RTDB.setJSON(&fbdo, "/status", &gJson);
@@ -1356,7 +1438,7 @@ void firebaseSeedControl() {
   esp_task_wdt_reset();
 
   if (seeded > 0) {
-    char msg[64];
+    char msg[ALERT_MSG_LEN];
     snprintf(msg, sizeof(msg), "เติมค่าตั้งที่ขาดลง /control แล้ว %d คีย์", seeded);
     logInfo(msg);
   }
@@ -1385,6 +1467,7 @@ void taskSensor(void* pv) {
 
   for (;;) {
     esp_task_wdt_reset();
+    beat(T_SENSOR);
 
     // กดปุ่ม BOOT ค้าง 3 วินาที = เข้าโหมด calibrate
     if (digitalRead(CALIB_BUTTON) == LOW && !state.calibMode) {
@@ -1474,7 +1557,7 @@ void applyPendingConfig() {
 
   if (changed) {
     saveConfig();
-    char msg[128];
+    char msg[ALERT_MSG_LEN];
     snprintf(msg, sizeof(msg), "ค่าตั้งใหม่: target=%.2f +/-%.2f dose=%ds cooldown=%ds auto=%s",
              cfg.targetPH, cfg.phTolerance, (int)(cfg.dosingTimeMs / 1000),
              (int)(cfg.cooldownMs / 1000), cfg.autoMode ? "ON" : "OFF");
@@ -1487,6 +1570,7 @@ void taskControl(void* pv) {
 
   for (;;) {
     esp_task_wdt_reset();
+    beat(T_CONTROL);
     applyPendingConfig();
 
     if (state.emergencyStop) {
@@ -1547,6 +1631,7 @@ void taskDisplay(void* pv) {
 
   for (;;) {
     esp_task_wdt_reset();
+    beat(T_DISPLAY);
 
     if (state.calibMode) {
       // ตอน calibrate ให้ processCalibration() คุมจอเอง
@@ -1671,20 +1756,53 @@ void taskFirebase(void* pv) {
   unsigned long lastStatus    = 0;
   unsigned long lastLowMemLog = 0;
   unsigned long lastHistory   = 0;
-  unsigned long lastWiFiTry = 0;
-  float         lastSentPH  = -999.0;
-  uint32_t      consecFails = 0;
+  unsigned long lastWiFiTry   = 0;
+  float         lastSentPH    = -999.0;
+  uint32_t      consecFails   = 0;
+
+  // ── ตัวจับเวลาของระบบเฝ้าระวัง ──
+  unsigned long wifiDownSince   = 0;   // 0 = ปกติดี
+  unsigned long fbNotReadySince = 0;
+  unsigned long lowMemSince     = 0;
+  unsigned long streamDownSince = 0;
+  bool          fbReinitDone    = false;
 
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_task_wdt_reset();
+    beat(T_FIREBASE);
 
     unsigned long now = millis();
+
+    // ── ตรวจชีพจรของ task อื่น ──
+    // WDT จับ task ที่ค้างได้ แต่จับ task ที่ตายหายไปเลยไม่ได้
+    for (int i = 0; i < TASK_COUNT; i++) {
+      if (i == T_FIREBASE || gTaskBeat[i] == 0) continue;
+      if (isTimeElapsed(gTaskBeat[i], TASK_BEAT_TIMEOUT_MS)) {
+        char msg[ALERT_MSG_LEN];
+        snprintf(msg, sizeof(msg), "task %s ไม่ตอบสนองเกิน %lu วินาที",
+                 kTaskName[i], TASK_BEAT_TIMEOUT_MS / 1000);
+        safeReboot(msg);
+      }
+    }
+
+    // ── รีบูตกันเหนียวตามกำหนด เฉพาะตอนที่ไม่ได้ทำงานอะไรค้างอยู่ ──
+    if (DAILY_REBOOT_MS > 0 && millis() >= DAILY_REBOOT_MS
+        && !isDosingInProgress() && !state.calibMode && !state.emergencyStop) {
+      safeReboot("ครบกำหนดรีบูตประจำวัน (ไม่มีงานค้าง)");
+    }
 
     // ── WiFi หลุด: พยายามต่อใหม่ ──
     if (WiFi.status() != WL_CONNECTED) {
       gWiFiConnected = false;
       gFirebaseReady = false;
+      if (wifiDownSince == 0) wifiDownSince = now;
+
+      // ต่อไม่ติดนานเกินไป = รีบูตดีกว่าปล่อยให้ระบบตาบอดทั้งคืน
+      if (isTimeElapsed(wifiDownSince, WIFI_DEAD_REBOOT_MS)) {
+        safeReboot("WiFi ต่อไม่ติดเกิน 15 นาที");
+      }
+
       if (isTimeElapsed(lastWiFiTry, FB_WIFI_RETRY_MS)) {
         lastWiFiTry = now;
         if (wifiConnect()) syncNTP();   // ต้อง sync เวลาใหม่ทุกครั้งที่ต่อ WiFi ใหม่
@@ -1692,10 +1810,29 @@ void taskFirebase(void* pv) {
       continue;
     }
     gWiFiConnected = true;
+    wifiDownSince  = 0;
 
-    // ── Firebase ยังไม่พร้อม: รอแบบมี backoff ไม่ retry SSL ถี่เกินไป ──
+    // ── Firebase ยังไม่พร้อม: รอ แล้วไล่ระดับการกู้คืน ──
     if (!Firebase.ready()) {
       gFirebaseReady = false;
+      if (fbNotReadySince == 0) fbNotReadySince = now;
+
+      // ขั้นที่ 1: init ใหม่ (token อาจพัง หรือ signUp ค้าง)
+      if (!fbReinitDone && isTimeElapsed(fbNotReadySince, FB_REINIT_AFTER_MS)) {
+        fbReinitDone = true;
+        logWarning("Firebase ไม่พร้อมนานเกินไป — init ใหม่");
+        sendAlert("Firebase ไม่พร้อมเกิน 10 นาที กำลัง init ใหม่", 1);
+        fbdo.clear();
+        fbdoStream.clear();
+        gStreamStarted = false;
+        firebaseInit();
+      }
+
+      // ขั้นที่ 2: init ใหม่แล้วยังไม่ขึ้น = ยอมแพ้ รีบูต
+      if (isTimeElapsed(fbNotReadySince, FB_DEAD_REBOOT_MS)) {
+        safeReboot("Firebase ไม่พร้อมเกิน 20 นาที");
+      }
+
       vTaskDelay(pdMS_TO_TICKS(FB_NOT_READY_BACKOFF));
       continue;
     }
@@ -1703,6 +1840,25 @@ void taskFirebase(void* pv) {
     if (!gFirebaseReady) {
       gFirebaseReady = true;
       logInfo("Firebase พร้อมใช้งาน");
+    }
+    fbNotReadySince = 0;
+    fbReinitDone    = false;
+
+    // ── stream ตายเงียบ: เปิดใหม่ ──
+    // ไม่ดูจาก "ไม่มีข้อมูลเข้ามา" เพราะ /control นานๆ เปลี่ยนที
+    // ดูจากสถานะการเชื่อมต่อจริงของ FirebaseData ที่ใช้ stream แทน
+    if (gStreamStarted && !fbdoStream.httpConnected()) {
+      if (streamDownSince == 0) streamDownSince = now;
+      if (isTimeElapsed(streamDownSince, STREAM_DEAD_MS)) {
+        streamDownSince = 0;
+        logWarning("stream /control หลุดนานเกินไป — เปิดใหม่");
+        sendAlert("stream /control หลุด กำลังเปิดใหม่", 1);
+        Firebase.RTDB.endStream(&fbdoStream);
+        fbdoStream.clear();
+        gStreamStarted = false;
+      }
+    } else {
+      streamDownSince = 0;
     }
 
     // เปิด stream ครั้งแรกหลัง Firebase พร้อม (ต้องเคลียร์ปุ่มค้างก่อนเสมอ)
@@ -1730,12 +1886,20 @@ void taskFirebase(void* pv) {
     // แล้วไลบรารีจะทิ้งทั้ง stream และ connection หลักไปด้วย
     size_t maxBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     if (maxBlock < FB_MIN_FREE_BLOCK) {
+      if (lowMemSince == 0) lowMemSince = now;
+
+      // ต่ำค้างนานแปลว่าหน่วยความจำรั่วหรือแตกจนกู้เองไม่ได้แล้ว
+      if (isTimeElapsed(lowMemSince, LOWMEM_REBOOT_MS)) {
+        safeReboot("หน่วยความจำต่อเนื่องต่ำค้างเกิน 5 นาที");
+      }
+
       if (isTimeElapsed(lastLowMemLog, 30000)) {
         lastLowMemLog = now;
         Serial.printf("[FB] บล็อกต่อเนื่องเหลือ %u ไบต์ ข้ามการส่งรอบนี้\n", (unsigned)maxBlock);
       }
       continue;
     }
+    lowMemSince = 0;
 
     if (isTimeElapsed(lastStatus, interval)) {
       lastStatus = now;
@@ -1782,6 +1946,22 @@ void setup() {
   state.currentTemp = NAN;
   setLastAction("Idle");
 
+  // ── บันทึกว่ารอบก่อนดับเพราะอะไร ──
+  esp_reset_reason_t rr = esp_reset_reason();
+  copyUtf8(gResetReason, sizeof(gResetReason), resetReasonText(rr));
+
+  // ตัวนับใน RTC memory อยู่รอด soft reset แต่หายเมื่อไฟดับ
+  // ต้องเช็ค magic ก่อน ไม่งั้นจะได้ค่าขยะตอนเปิดไฟครั้งแรก
+  if (gRtcMagic != RTC_MAGIC || rr == ESP_RST_POWERON) {
+    gRtcMagic    = RTC_MAGIC;
+    gRebootCount = 0;
+    gLastRebootReason[0] = '\0';
+  }
+
+  Serial.printf("[BOOT] สาเหตุการรีเซ็ตรอบก่อน: %s\n", gResetReason);
+  if (gLastRebootReason[0]) Serial.printf("[BOOT] รีบูตเองเพราะ: %s\n", gLastRebootReason);
+  Serial.printf("[BOOT] รีบูตเองมาแล้ว %lu ครั้งตั้งแต่เสียบไฟ\n", (unsigned long)gRebootCount);
+
   // ── Watchdog: core 3.x init TWDT มาให้แล้ว ต้องใช้ reconfigure แทน init ──
   esp_task_wdt_config_t wdt_config = {
     .timeout_ms     = WDT_TIMEOUT_SEC * 1000,
@@ -1816,6 +1996,11 @@ void setup() {
   pinMode(CALIB_BUTTON, INPUT_PULLUP);
 
   analogSetAttenuation(ADC_11db);   // ให้วัดได้ถึง ~3.3V
+
+  // จำกัดเวลารอบัส I2C — ถ้าสาย LCD หลุดหรือบัสค้าง lcd.print() จะบล็อกทั้ง task
+  // ตั้ง timeout ไว้ให้มันคืนค่าพลาดแทนที่จะรอไปเรื่อยๆ
+  Wire.begin();
+  Wire.setTimeOut(50);
 
   tempSensor.begin();
 
@@ -1863,6 +2048,19 @@ void setup() {
   Serial.printf("  Free heap    : %d bytes\n", ESP.getFreeHeap());
   Serial.println("\n  กดปุ่ม BOOT ค้าง 3 วินาที เพื่อเริ่ม calibrate");
   Serial.println("===========================================================\n");
+
+  // แจ้งขึ้น Firebase ว่าเพิ่งบูต และเพราะอะไร — ระบบที่รัน 24 ชม.
+  // ต้องตามรอยได้ว่าเคยรีบูตตอนไหนบ้างและด้วยสาเหตุอะไร
+  {
+    char msg[ALERT_MSG_LEN];
+    if (gLastRebootReason[0])
+      snprintf(msg, sizeof(msg), "บอร์ดเริ่มทำงาน (%s) — รอบก่อนรีบูตเพราะ: %s",
+               gResetReason, gLastRebootReason);
+    else
+      snprintf(msg, sizeof(msg), "บอร์ดเริ่มทำงาน (%s)", gResetReason);
+    sendAlert(msg, (strstr(gResetReason, "crash") || strstr(gResetReason, "watchdog")
+                    || strstr(gResetReason, "ไฟตก")) ? 2 : 0);
+  }
 
   showMessage("SYSTEM READY", cfg.isPhCalibrated ? "OK" : "Need calib!");
 

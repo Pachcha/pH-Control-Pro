@@ -392,6 +392,8 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
       <div class="rows">
         <div class="row"><span class="k">เฟิร์มแวร์</span><span class="v" id="fw">–</span></div>
         <div class="row"><span class="k">อัปเดตล่าสุด</span><span class="v" id="lastSeen">–</span></div>
+        <div class="row"><span class="k">บูตครั้งนี้เพราะ</span><span class="v" id="resetReason" style="font-size:.78rem">–</span></div>
+        <div class="row"><span class="k">รีบูตเองมาแล้ว</span><span class="v" id="rebootCount">–</span></div>
       </div>
     </div>
   </div>
@@ -724,6 +726,18 @@ function renderStatus(d){
   $("uptime").textContent = d.uptimeMin != null ? fmtUptime(d.uptimeMin) : "–";
   $("senErr").textContent = (d.sensorErrorCount ?? "–") + " ครั้ง";
   $("fw").textContent     = d.fwVersion || "–";
+
+  // สาเหตุการบูต — ระบบที่รัน 24 ชม. ต้องตามรอยได้ว่าเคยรีบูตเพราะอะไร
+  const rr = d.resetReason || "–";
+  const rrEl = $("resetReason");
+  rrEl.textContent = rr;
+  rrEl.style.color = /crash|watchdog|ไฟตก/.test(rr) ? "var(--red)" : "";
+
+  const rc = Number(d.rebootCount) || 0;
+  const rcEl = $("rebootCount");
+  rcEl.textContent = rc + " ครั้ง" + (d.lastRebootReason && d.lastRebootReason !== "-" ? "  ·  " + d.lastRebootReason : "");
+  rcEl.style.color = rc >= 3 ? "var(--red)" : rc >= 1 ? "var(--amber)" : "";
+  rcEl.style.fontSize = ".78rem";
 
   scheduleDraw();                   // เป้าหมายเปลี่ยน แถบบนกราฟต้องขยับตาม
 

@@ -59,7 +59,9 @@
 #define CALIB_PH_1         4.01
 #define CALIB_PH_2         6.86
 #define CALIB_PH_3         9.18
-#define CALIB_STEP_TIMEOUT 45000UL   // ถ้าไม่กดปุ่มภายใน 45 วิ จะเก็บค่าให้เอง
+#define CALIB_ABORT_MS     300000UL  // ไม่กดเก็บค่าภายใน 5 นาที = ยกเลิก (ไม่เก็บค่าขยะ)
+#define PH_STABLE_WINDOW   30        // จำนวนตัวอย่างที่ใช้ตัดสินว่าแรงดันนิ่งแล้ว
+#define PH_STABLE_MV       0.004     // ส่วนเบี่ยงเบนต่ำกว่า 4 mV ถือว่านิ่ง
 #define CALIB_MIN_R2       90.0      // R² ต่ำกว่านี้ถือว่า calibrate ไม่ผ่าน
 
 #define WDT_TIMEOUT_SEC    30
@@ -83,6 +85,7 @@
 
 // ── จังหวะส่งข้อมูลขึ้น Firebase ──
 #define FB_STATUS_ACTIVE_MS    5000
+#define FB_STATUS_CALIB_MS     2000      // ตอน calibrate ต้องเห็นแรงดันสดๆ
 #define FB_STATUS_IDLE_MS      15000
 #define FB_HISTORY_MS          300000UL   // เก็บกราฟย้อนหลังทุก 5 นาที
 #define FB_NOT_READY_BACKOFF   5000
@@ -150,7 +153,7 @@ struct SystemState {
 
 // คำสั่งที่รับมาจาก Dashboard ผ่าน stream
 enum CmdType : uint8_t {
-  CMD_PH_UP, CMD_PH_DOWN, CMD_MIXER, CMD_START_CALIB,
+  CMD_PH_UP, CMD_PH_DOWN, CMD_MIXER, CMD_START_CALIB, CMD_CALIB_CAPTURE,
   CMD_ESTOP_ON, CMD_ESTOP_OFF, CMD_REBOOT
 };
 
@@ -190,6 +193,12 @@ volatile uint32_t gFbFailCount    = 0;
 // ค่าตั้งที่รับมาจาก Dashboard รอนำไปใช้ (stream callback ห้ามบล็อกยาว
 // จึงแค่พักค่าไว้ตรงนี้ แล้วให้ taskControl เอาไปเขียนลง cfg + EEPROM)
 volatile uint32_t gSensorSeq      = 0;    // เพิ่มขึ้น 1 ทุกครั้งที่อ่านเซนเซอร์รอบใหม่
+
+// แรงดันดิบจากขา pH — เผยแพร่ขึ้น /status เสมอ ใช้ดูว่าต่อสายติดไหม
+// และใช้ดูว่าค่านิ่งพอจะกดเก็บตอน calibrate หรือยัง
+volatile float gPhVoltage         = NAN;
+volatile bool  gPhStable          = false;
+volatile bool  gCalibCaptureReq   = false;   // คำสั่งเก็บค่าจากหน้าเว็บ
 
 volatile bool  gCfgDirty          = false;
 volatile float gPendingTargetPH   = NAN;
@@ -290,30 +299,61 @@ float readTemperature() {
 }
 
 // อ่าน pH: เก็บหลายตัวอย่าง → ตัดค่าสุดขอบ 20% → หา median → แปลงเป็น pH
+// อ่านแรงดันดิบจากขา pH: เก็บหลายตัวอย่าง ตัดค่าสุดขอบ 20% แล้วหา median
+// ADC ของ ESP32 สัญญาณรบกวนสูง อ่านครั้งเดียวแกว่งเป็นสิบมิลลิโวลต์
+float readPhVoltage(int samples) {
+  const int MAXS = 24;
+  if (samples > MAXS) samples = MAXS;
+
+  float v[MAXS];
+  int   n = 0;
+  for (int i = 0; i < samples; i++) {
+    int raw = analogRead(PH_PIN);
+    if (raw > 10 && raw < 4090) v[n++] = raw * (3.3 / 4095.0);
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  if (n < samples / 2) return NAN;
+
+  std::sort(v, v + n);
+  int lo = n / 5, hi = n - lo;
+  return getMedianValue(v + lo, hi - lo);
+}
+
+// ติดตามว่าแรงดันนิ่งแล้วหรือยัง — หัววัด pH ต้องใช้เวลา 30-60 วิกว่าจะเข้าที่
+// ถ้าเก็บค่าตอนยังไม่นิ่ง เส้น calibration จะเพี้ยนและ R² ตก
+void trackPhVoltage(float v) {
+  static float    win[PH_STABLE_WINDOW];
+  static int      idx = 0, filled = 0;
+
+  gPhVoltage = v;
+
+  if (isnan(v)) { filled = 0; gPhStable = false; return; }
+
+  win[idx] = v;
+  idx = (idx + 1) % PH_STABLE_WINDOW;
+  if (filled < PH_STABLE_WINDOW) filled++;
+  if (filled < PH_STABLE_WINDOW) { gPhStable = false; return; }
+
+  float mean = 0;
+  for (int i = 0; i < PH_STABLE_WINDOW; i++) mean += win[i];
+  mean /= PH_STABLE_WINDOW;
+
+  float var = 0;
+  for (int i = 0; i < PH_STABLE_WINDOW; i++) var += (win[i] - mean) * (win[i] - mean);
+
+  gPhStable = sqrt(var / PH_STABLE_WINDOW) < PH_STABLE_MV;
+}
+
 float readPH() {
-  if (!cfg.isPhCalibrated) return NAN;
-
   for (int retry = 0; retry < MAX_SENSOR_RETRIES; retry++) {
-    const int NUM_SAMPLES = 15;
-    float voltages[NUM_SAMPLES];
-    int   validSamples = 0;
+    float v = readPhVoltage(15);
+    trackPhVoltage(v);
 
-    for (int i = 0; i < NUM_SAMPLES; i++) {
-      int raw = analogRead(PH_PIN);
-      if (raw > 10 && raw < 4090) voltages[validSamples++] = raw * (3.3 / 4095.0);
-      vTaskDelay(pdMS_TO_TICKS(10));
-    }
+    if (!isnan(v)) {
+      // ยังไม่ calibrate = มีแรงดันให้ดูได้ แต่แปลงเป็น pH ยังไม่ได้
+      if (!cfg.isPhCalibrated) return NAN;
 
-    if (validSamples >= 10) {
-      std::sort(voltages, voltages + validSamples);
-
-      int startIdx = validSamples / 5;
-      int endIdx   = validSamples - startIdx;
-      int n        = endIdx - startIdx;
-
-      float medianVoltage = getMedianValue(voltages + startIdx, n);
-      float phValue = cfg.phSlope * medianVoltage + cfg.phIntercept;
-
+      float phValue = cfg.phSlope * v + cfg.phIntercept;
       if (phValue >= 0.0 && phValue <= 14.0) return phValue;
     }
 
@@ -661,8 +701,8 @@ void processCalibration() {
     const char* stepNames[3] = {"pH STEP 1/3", "pH STEP 2/3", "pH STEP 3/3"};
     int idx = state.calibStep - 1;
 
-    int   timeLeft = max(0, (int)(CALIB_STEP_TIMEOUT / 1000) - (int)(getElapsedTime(calibStartTime) / 1000));
-    float voltage  = analogRead(PH_PIN) * (3.3 / 4095.0);
+    float voltage = readPhVoltage(12);
+    trackPhVoltage(voltage);
 
     // สลับข้อความบรรทัดบนทุก 2 วิ ให้เห็นทั้งเลขขั้นและน้ำยาที่ต้องใช้
     static unsigned long lastToggle = 0;
@@ -673,22 +713,34 @@ void processCalibration() {
     }
 
     updateLine(0, showInstruction ? solutions[idx] : stepNames[idx]);
-    updateLine(1, "V:" + String(voltage, 3) + " T:" + String(timeLeft) + "s");
+    updateLine(1, "V:" + String(isnan(voltage) ? 0.0 : voltage, 3) +
+                  (gPhStable ? " STABLE" : " wait.."));
+
+    // เก็บค่าเมื่อ "คนสั่ง" เท่านั้น — จะกดปุ่ม BOOT หรือกดจากหน้าเว็บก็ได้
+    // เดิมมี timeout 45 วิแล้วบังคับเก็บ ซึ่งได้ค่าตอนหัววัดยังไม่นิ่ง (R² ตก)
+    bool wantCapture = (digitalRead(CALIB_BUTTON) == LOW) || gCalibCaptureReq;
+    gCalibCaptureReq = false;
 
     bool captured = false;
-    if (digitalRead(CALIB_BUTTON) == LOW) {
-      vTaskDelay(pdMS_TO_TICKS(300));
+    if (wantCapture) {
+      showMessage("READING...", "hold still");
       cfg.phCalibVoltage[idx] = collectStableReading(PH_PIN, 30);
       captured = true;
-    } else if (isTimeElapsed(calibStartTime, CALIB_STEP_TIMEOUT)) {
-      cfg.phCalibVoltage[idx] = collectStableReading(PH_PIN, 20);
-      captured = true;
+    } else if (isTimeElapsed(calibStartTime, CALIB_ABORT_MS)) {
+      // ไม่เก็บค่าขยะ — ยกเลิกไปเลยดีกว่าได้เส้น calibration ที่เชื่อไม่ได้
+      logWarning("ไม่ได้กดเก็บค่าภายใน 5 นาที — ยกเลิก calibration");
+      sendAlert("ยกเลิก calibration เพราะไม่ได้กดเก็บค่าภายใน 5 นาที", 1);
+      showMessage("CALIB", "CANCELLED");
+      vTaskDelay(pdMS_TO_TICKS(2500));
+      state.calibMode = false;
+      state.calibStep = 0;
     }
 
     if (captured) {
       char msg[64];
-      snprintf(msg, sizeof(msg), "จุดที่ %d: %.4f V", state.calibStep, cfg.phCalibVoltage[idx]);
+      snprintf(msg, sizeof(msg), "เก็บจุดที่ %d/3 ได้ %.4f V", state.calibStep, cfg.phCalibVoltage[idx]);
       logInfo(msg);
+      sendAlert(msg, 0);
 
       showMessage("pH " + String(state.calibStep) + " SAVED",
                   "V: " + String(cfg.phCalibVoltage[idx], 4));
@@ -808,6 +860,7 @@ void applyControlKV(const String& key, const String& val) {
   else if (key == "phUp"          && bv) { queueCmd(CMD_PH_UP); }
   else if (key == "phDown"        && bv) { queueCmd(CMD_PH_DOWN); }
   else if (key == "startCalib"    && bv) { queueCmd(CMD_START_CALIB); }
+  else if (key == "calibCapture"  && bv) { queueCmd(CMD_CALIB_CAPTURE); }
   else if (key == "reboot"        && bv) { queueCmd(CMD_REBOOT); }
   else if (key == "mixer")               { gMixerWant = bv; queueCmd(CMD_MIXER); }
   else if (key == "emergencyStop")       { queueCmd(bv ? CMD_ESTOP_ON : CMD_ESTOP_OFF); }
@@ -918,6 +971,11 @@ bool firebaseUploadStatus() {
 
   gJson.clear();
   gJson.set("ph",               isnan(ph) ? -1.0 : (double)ph);
+  gJson.set("phVoltage",        isnan(gPhVoltage) ? -1.0 : (double)gPhVoltage);
+  gJson.set("phStable",         (bool)gPhStable);
+  gJson.set("calibV1",          (double)cfg.phCalibVoltage[0]);
+  gJson.set("calibV2",          (double)cfg.phCalibVoltage[1]);
+  gJson.set("calibV3",          (double)cfg.phCalibVoltage[2]);
   gJson.set("temp",             isnan(temp) ? -127.0 : (double)temp);
   gJson.set("phValid",          !isnan(ph));
   gJson.set("dosing",           isDosingInProgress());
@@ -981,8 +1039,8 @@ static bool controlKeyMissing(const char* key) {
 // เคลียร์ปุ่มค้างและเติมค่าตั้งเริ่มต้น ต้องทำ "ก่อน" เปิด stream
 // ถ้าอุปกรณ์รีบูตตอนที่ /control/phUp ยังเป็น true อยู่ พอ stream เปิดจะสั่งจ่ายสารทันที
 void firebaseSeedControl() {
-  const char* buttons[] = {"phUp", "phDown", "mixer", "startCalib", "reboot"};
-  for (int i = 0; i < 5; i++) {
+  const char* buttons[] = {"phUp", "phDown", "mixer", "startCalib", "calibCapture", "reboot"};
+  for (int i = 0; i < 6; i++) {
     String p = String("/control/") + buttons[i];
     Firebase.RTDB.setBool(&fbdo, p.c_str(), false);
     esp_task_wdt_reset();
@@ -1281,6 +1339,12 @@ void processCommands() {
         ackPath = "/control/startCalib";
         break;
 
+      case CMD_CALIB_CAPTURE:
+        // ให้ FSM ใน taskSensor เป็นคนเก็บค่าจริง ที่นี่แค่ตั้งธง
+        if (state.calibMode) gCalibCaptureReq = true;
+        ackPath = "/control/calibCapture";
+        break;
+
       case CMD_ESTOP_ON:
         if (!state.emergencyStop) {
           state.emergencyStop = true;
@@ -1371,8 +1435,9 @@ void taskFirebase(void* pv) {
     }
 
     // ── ส่งสถานะ: ถี่ขึ้นตอนกำลังทำงาน ห่างขึ้นตอนอยู่เฉย ──
-    uint32_t interval = (isDosingInProgress() || state.calibMode)
-                        ? FB_STATUS_ACTIVE_MS : FB_STATUS_IDLE_MS;
+    uint32_t interval = state.calibMode      ? FB_STATUS_CALIB_MS
+                      : isDosingInProgress() ? FB_STATUS_ACTIVE_MS
+                                             : FB_STATUS_IDLE_MS;
 
     if (isTimeElapsed(lastStatus, interval)) {
       lastStatus = now;

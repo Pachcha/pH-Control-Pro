@@ -158,6 +158,17 @@ input[type=number]:focus{outline:none;border-color:var(--blue);}
 .setup code{background:#000;padding:2px 7px;border-radius:5px;font-size:.8rem;color:var(--cyan);
   font-family:ui-monospace,Menlo,monospace;word-break:break-all;}
 
+/* แผง calibration — โผล่เฉพาะตอนบอร์ดอยู่ในโหมด calibrate */
+.calib-panel{border-color:rgba(139,92,246,.5);background:linear-gradient(180deg,rgba(139,92,246,.10),var(--surface));text-align:center;}
+.calib-step{font-size:.8rem;color:var(--txt-2);font-weight:700;letter-spacing:.5px;}
+.calib-sol{font-size:1.05rem;font-weight:800;margin:6px 0 14px;}
+.calib-v{font-size:3rem;font-weight:800;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.02em;}
+.calib-v small{font-size:1rem;color:var(--txt-3);font-weight:600;}
+.calib-stab{font-size:.85rem;font-weight:700;margin:10px 0 16px;}
+.calib-stab.ok{color:#6ee7b7;}
+.calib-stab.wait{color:#fcd34d;}
+.calib-hint{font-size:.72rem;color:var(--txt-3);margin-top:10px;line-height:1.6;}
+
 /* ข้อมูลไม่สด (บอร์ดเงียบ/ยังไม่เคยส่ง) — ทำให้จางลงกันอ่านผิดว่าเป็นค่าปัจจุบัน */
 body.stale .grid{opacity:.5;transition:opacity .3s;}
 .grid{transition:opacity .3s;}
@@ -177,6 +188,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
 
   /* บนมือถือเอาแผงควบคุมขึ้นมาก่อน จะได้ไม่ต้องเลื่อนยาวกว่าจะถึงปุ่มที่ใช้บ่อย */
   .grid > .card{order:5;}
+  .calib-panel{order:0;}
   .grid > .card.m-gauge{order:1;}
   .grid > .card.m-status{order:2;}
   .grid > .card.m-control{order:3;}
@@ -199,6 +211,16 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
 </div>
 
 <div class="banner" id="banner"></div>
+
+<div class="card wide calib-panel" id="calibPanel" style="display:none">
+  <div class="card-title">🎯 กำลัง Calibrate</div>
+  <div class="calib-step" id="calibStepTxt">ขั้นที่ – / 3</div>
+  <div class="calib-sol"  id="calibSolTxt">–</div>
+  <div class="calib-v"><span id="calibVolt">–</span> <small>V</small></div>
+  <div class="calib-stab" id="calibStab">–</div>
+  <button class="btn amber" id="btnCapture">📌 เก็บค่าจุดนี้</button>
+  <div class="calib-hint">รอจนขึ้น "ค่านิ่งแล้ว" ก่อนกดเก็บ · กดปุ่ม BOOT ที่บอร์ดก็ได้เหมือนกัน</div>
+</div>
 
 <div class="grid">
 
@@ -226,6 +248,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
     <div class="card-title">⚡ สถานะการทำงาน</div>
     <div class="rows">
       <div class="row"><span class="k">อุณหภูมิน้ำ</span><span class="v" id="tempVal">--</span></div>
+      <div class="row"><span class="k">แรงดันดิบจากหัววัด</span><span class="v" id="phVolt">--</span></div>
       <div class="row"><span class="k">โหมด</span><span class="v"><span class="pill off" id="modePill">–</span></span></div>
       <div class="row"><span class="k">กำลังจ่ายสาร</span><span class="v"><span class="pill off" id="dosePill">–</span></span></div>
       <div class="row"><span class="k">คำสั่งล่าสุด</span><span class="v" id="lastAction">–</span></div>
@@ -244,6 +267,7 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
       <div class="row"><span class="k">Calibration</span><span class="v"><span class="pill off" id="calibPill">–</span></span></div>
       <div class="row"><span class="k">ความแม่น (R²)</span><span class="v" id="r2Val">–</span></div>
       <div class="row"><span class="k">calibrate มาแล้ว</span><span class="v" id="calibCount">–</span></div>
+      <div class="row"><span class="k">จุดที่เก็บได้ (V)</span><span class="v" id="calibPts" style="font-size:.78rem">–</span></div>
     </div>
   </div>
 
@@ -570,6 +594,15 @@ function renderStatus(d){
   $("phTargetTxt").textContent = "เป้าหมาย " + fmt(target, 2) + "  ±" + fmt(tol, 2);
 
   $("tempVal").textContent = (d.temp > -100) ? fmt(d.temp, 1, " °C") : "–";
+
+  const volt = (d.phVoltage != null && d.phVoltage >= 0) ? Number(d.phVoltage) : null;
+  $("phVolt").textContent = volt === null ? "อ่านไม่ได้"
+                          : volt.toFixed(3) + " V" + (d.phStable ? " ✓" : " ~");
+
+  const pts = [d.calibV1, d.calibV2, d.calibV3].filter(v => v != null && v > 0);
+  $("calibPts").textContent = pts.length ? pts.map(v => Number(v).toFixed(3)).join(" / ") : "–";
+
+  renderCalibPanel(d, volt);
   setPill($("modePill"), !!d.autoMode, "อัตโนมัติ", "สั่งมือ");
   setPill($("dosePill"), !!d.dosing, d.lastAction || "กำลังจ่าย", "ไม่ได้จ่าย");
   $("lastAction").textContent = d.lastAction || "–";
@@ -605,6 +638,31 @@ function renderStatus(d){
   fillInput("inCool",   d.cooldownConfSec);
 
   updateLiveState();   // คุมจุดสถานะ + แถบเตือนไว้ที่เดียว
+}
+
+const BUFFERS = ["pH 4.01", "pH 6.86", "pH 9.18"];
+
+function renderCalibPanel(d, volt){
+  const panel = $("calibPanel");
+  if (!d.calibMode) { panel.style.display = "none"; return; }
+  panel.style.display = "block";
+
+  const step = Number(d.calibStep) || 1;
+  $("calibStepTxt").textContent = "ขั้นที่ " + step + " / 3";
+  $("calibSolTxt").textContent  = "จุ่มหัววัดในน้ำยา " + (BUFFERS[step - 1] || "–");
+  $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(3);
+
+  const st = $("calibStab");
+  if (volt === null) {
+    st.className = "calib-stab wait";
+    st.textContent = "⚠️ อ่านแรงดันไม่ได้ — ตรวจสายเซนเซอร์";
+  } else if (d.phStable) {
+    st.className = "calib-stab ok";
+    st.textContent = "✓ ค่านิ่งแล้ว — กดเก็บได้เลย";
+  } else {
+    st.className = "calib-stab wait";
+    st.textContent = "⏳ ยังไม่นิ่ง รออีกสักครู่…";
+  }
 }
 
 function fillInput(id, val){
@@ -722,6 +780,7 @@ bindButton("btnCalib",  "startCalib",
   "เริ่ม calibrate 3 จุด?\n\nเตรียมน้ำยา buffer pH 4.01 / 6.86 / 9.18 ไว้ให้พร้อม\nแต่ละขั้นกดปุ่ม BOOT ที่บอร์ดเพื่อเก็บค่า (หรือรอ 45 วินาที)",
   "สั่งเริ่ม calibrate");
 bindButton("btnReboot", "reboot",     "รีบูตอุปกรณ์เลยไหม?",           "สั่งรีบูตอุปกรณ์");
+bindButton("btnCapture","calibCapture", null,                          "สั่งเก็บค่า calibration จุดนี้");
 
 // บันทึกค่าตั้ง
 $("btnSave").addEventListener("click", () => {

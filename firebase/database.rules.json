@@ -29,6 +29,7 @@
       "phDown":        { ".validate": "newData.isBoolean()" },
       "mixer":         { ".validate": "newData.isBoolean()" },
       "startCalib":    { ".validate": "newData.isBoolean()" },
+      "calibCapture":  { ".validate": "newData.isBoolean()" },
       "emergencyStop": { ".validate": "newData.isBoolean()" },
       "reboot":        { ".validate": "newData.isBoolean()" },
 

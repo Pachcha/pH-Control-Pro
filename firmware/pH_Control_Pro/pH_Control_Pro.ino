@@ -59,7 +59,15 @@
 #define CALIB_PH_1         4.01
 #define CALIB_PH_2         6.86
 #define CALIB_PH_3         9.18
-#define CALIB_ABORT_MS     300000UL  // ไม่กดเก็บค่าภายใน 5 นาที = ยกเลิก (ไม่เก็บค่าขยะ)
+#define CALIB_ABORT_MS     300000UL  // ไม่ได้เก็บค่าภายใน 5 นาที = ยกเลิก (ไม่เก็บค่าขยะ)
+
+// ── เก็บค่าอัตโนมัติเมื่อนิ่ง ──
+// ต้องผ่านทั้ง 2 เงื่อนไข ไม่ใช่แค่ "นิ่ง ณ ตอนนี้"
+//   1) อยู่ในขั้นนี้มานานพอ — เผื่อเวลาล้างหัววัด ซับแห้ง แล้วจุ่มน้ำยาใหม่
+//      ถ้าไม่มีข้อนี้ ตอนหัววัดยังแช่น้ำล้างอยู่แล้วบังเอิญนิ่ง จะเก็บค่าผิดทันที
+//   2) นิ่งต่อเนื่องกันจริง ไม่ใช่นิ่งแวบเดียวแล้วไหลต่อ
+#define CALIB_MIN_DWELL_MS    30000UL
+#define CALIB_STABLE_HOLD_MS  10000UL
 #define PH_STABLE_WINDOW   30        // จำนวนตัวอย่างที่ใช้ตัดสินว่าแรงดันนิ่งแล้ว
 #define PH_STABLE_MV       0.004     // ส่วนเบี่ยงเบนต่ำกว่า 4 mV ถือว่านิ่ง
 #define CALIB_MIN_R2       90.0      // R² ต่ำกว่านี้ถือว่า calibrate ไม่ผ่าน
@@ -208,6 +216,8 @@ volatile uint32_t gSensorSeq      = 0;    // เพิ่มขึ้น 1 ท�
 volatile float gPhVoltage         = NAN;
 volatile bool  gPhStable          = false;
 volatile bool  gCalibCaptureReq   = false;   // คำสั่งเก็บค่าจากหน้าเว็บ
+volatile int   gCalibDwellSec     = 0;       // อยู่ในขั้นนี้มากี่วินาทีแล้ว
+volatile int   gCalibStableSec    = 0;       // นิ่งต่อเนื่องมากี่วินาทีแล้ว
 
 volatile bool  gCfgDirty          = false;
 volatile float gPendingTargetPH   = NAN;
@@ -221,7 +231,8 @@ unsigned long doseTimestamps[MAX_DOSES_PER_HOUR];
 int           doseTsCount = 0;
 
 // ตัวแปรระหว่าง calibrate
-unsigned long calibStartTime = 0;
+unsigned long calibStartTime   = 0;
+unsigned long calibStableSince = 0;   // เริ่มนิ่งตั้งแต่เมื่อไหร่ (0 = ยังไม่นิ่ง)
 
 // ============================================================================
 //  ประกาศฟังก์ชันล่วงหน้า
@@ -731,9 +742,12 @@ void calculatePHCalibration() {
 
 void startCalibration() {
   if (xSemaphoreTake(calibMutex, pdMS_TO_TICKS(1000))) {
-    state.calibMode = true;
-    state.calibStep = 1;
-    calibStartTime  = millis();
+    state.calibMode  = true;
+    state.calibStep  = 1;
+    calibStartTime   = millis();
+    calibStableSince = 0;
+    gCalibDwellSec   = 0;
+    gCalibStableSec  = 0;
     xSemaphoreGive(calibMutex);
   }
 
@@ -766,12 +780,29 @@ void processCalibration() {
     }
 
     updateLine(0, showInstruction ? solutions[idx] : stepNames[idx]);
-    updateLine(1, "V:" + String(isnan(voltage) ? 0.0 : voltage, 3) +
-                  (gPhStable ? " STABLE" : " wait.."));
+    // บรรทัดล่าง: แรงดัน + ความคืบหน้าของการนิ่ง เช่น "V:1.876 S:7/10"
+    String l2 = "V:" + String(isnan(voltage) ? 0.0 : voltage, 3);
+    if (gPhStable) l2 += " S:" + String(gCalibStableSec) + "/" + String((int)(CALIB_STABLE_HOLD_MS / 1000));
+    else           l2 += " wait..";
+    updateLine(1, l2);
 
-    // เก็บค่าเมื่อ "คนสั่ง" เท่านั้น — จะกดปุ่ม BOOT หรือกดจากหน้าเว็บก็ได้
-    // เดิมมี timeout 45 วิแล้วบังคับเก็บ ซึ่งได้ค่าตอนหัววัดยังไม่นิ่ง (R² ตก)
-    bool wantCapture = (digitalRead(CALIB_BUTTON) == LOW) || gCalibCaptureReq;
+    // ── นับเวลาว่านิ่งต่อเนื่องมานานแค่ไหน ──
+    if (gPhStable) {
+      if (calibStableSince == 0) calibStableSince = millis();
+    } else {
+      calibStableSince = 0;   // สะดุดเมื่อไหร่ นับใหม่หมด
+    }
+
+    unsigned long dwellMs  = getElapsedTime(calibStartTime);
+    unsigned long stableMs = calibStableSince ? getElapsedTime(calibStableSince) : 0;
+    gCalibDwellSec  = dwellMs / 1000;
+    gCalibStableSec = stableMs / 1000;
+
+    // เก็บอัตโนมัติเมื่ออยู่ในขั้นนี้นานพอ "และ" นิ่งต่อเนื่องนานพอ
+    bool autoReady = (dwellMs >= CALIB_MIN_DWELL_MS) && (stableMs >= CALIB_STABLE_HOLD_MS);
+
+    // ยังกดเองได้ตลอด ถ้าไม่อยากรอ
+    bool wantCapture = (digitalRead(CALIB_BUTTON) == LOW) || gCalibCaptureReq || autoReady;
     gCalibCaptureReq = false;
 
     bool captured = false;
@@ -779,10 +810,12 @@ void processCalibration() {
       showMessage("READING...", "hold still");
       cfg.phCalibVoltage[idx] = collectStableReading(PH_PIN, 30);
       captured = true;
+      calibStableSince = 0;
     } else if (isTimeElapsed(calibStartTime, CALIB_ABORT_MS)) {
       // ไม่เก็บค่าขยะ — ยกเลิกไปเลยดีกว่าได้เส้น calibration ที่เชื่อไม่ได้
-      logWarning("ไม่ได้กดเก็บค่าภายใน 5 นาที — ยกเลิก calibration");
-      sendAlert("ยกเลิก calibration เพราะไม่ได้กดเก็บค่าภายใน 5 นาที", 1);
+      logWarning("ค่าไม่นิ่งภายใน 5 นาที — ยกเลิก calibration");
+      sendAlert("ยกเลิก calibration: ค่าไม่นิ่งพอภายใน 5 นาที ตรวจหัววัดกับข้อต่อ BNC", 1);
+      calibStableSince = 0;
       showMessage("CALIB", "CANCELLED");
       vTaskDelay(pdMS_TO_TICKS(2500));
       state.calibMode = false;
@@ -791,7 +824,8 @@ void processCalibration() {
 
     if (captured) {
       char msg[64];
-      snprintf(msg, sizeof(msg), "เก็บจุดที่ %d/3 ได้ %.4f V", state.calibStep, cfg.phCalibVoltage[idx]);
+      snprintf(msg, sizeof(msg), "เก็บจุดที่ %d/3 ได้ %.4f V (%s)", state.calibStep,
+               cfg.phCalibVoltage[idx], autoReady ? "อัตโนมัติ" : "สั่งเอง");
       logInfo(msg);
       sendAlert(msg, 0);
 
@@ -1026,6 +1060,10 @@ bool firebaseUploadStatus() {
   gJson.set("ph",               isnan(ph) ? -1.0 : (double)ph);
   gJson.set("phVoltage",        isnan(gPhVoltage) ? -1.0 : (double)gPhVoltage);
   gJson.set("phStable",         (bool)gPhStable);
+  gJson.set("calibDwellSec",    (int)gCalibDwellSec);
+  gJson.set("calibStableSec",   (int)gCalibStableSec);
+  gJson.set("calibNeedDwell",   (int)(CALIB_MIN_DWELL_MS / 1000));
+  gJson.set("calibNeedStable",  (int)(CALIB_STABLE_HOLD_MS / 1000));
   gJson.set("calibV1",          (double)cfg.phCalibVoltage[0]);
   gJson.set("calibV2",          (double)cfg.phCalibVoltage[1]);
   gJson.set("calibV3",          (double)cfg.phCalibVoltage[2]);

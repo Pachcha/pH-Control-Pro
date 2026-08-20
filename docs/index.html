@@ -168,6 +168,8 @@ input[type=number]:focus{outline:none;border-color:var(--blue);}
 .calib-stab.ok{color:#6ee7b7;}
 .calib-stab.wait{color:#fcd34d;}
 .calib-hint{font-size:.72rem;color:var(--txt-3);margin-top:10px;line-height:1.6;}
+.calib-bar{height:8px;border-radius:99px;background:var(--surface-2);overflow:hidden;margin:0 0 16px;}
+.calib-bar-fill{height:100%;width:0;border-radius:99px;background:var(--emerald);transition:width .4s ease;}
 
 /* ข้อมูลไม่สด (บอร์ดเงียบ/ยังไม่เคยส่ง) — ทำให้จางลงกันอ่านผิดว่าเป็นค่าปัจจุบัน */
 body.stale .grid{opacity:.5;transition:opacity .3s;}
@@ -218,8 +220,9 @@ footer{text-align:center;color:var(--txt-3);font-size:.72rem;margin-top:26px;}
   <div class="calib-sol"  id="calibSolTxt">–</div>
   <div class="calib-v"><span id="calibVolt">–</span> <small>V</small></div>
   <div class="calib-stab" id="calibStab">–</div>
-  <button class="btn amber" id="btnCapture">📌 เก็บค่าจุดนี้</button>
-  <div class="calib-hint">รอจนขึ้น "ค่านิ่งแล้ว" ก่อนกดเก็บ · กดปุ่ม BOOT ที่บอร์ดก็ได้เหมือนกัน</div>
+  <div class="calib-bar"><div class="calib-bar-fill" id="calibBar"></div></div>
+  <button class="btn amber" id="btnCapture">📌 เก็บเลยไม่ต้องรอ</button>
+  <div class="calib-hint">ระบบเก็บค่าให้เองเมื่อนิ่งพอ · กดปุ่มด้านบนหรือปุ่ม BOOT ถ้าอยากเก็บทันที</div>
 </div>
 
 <div class="grid">
@@ -662,16 +665,33 @@ function renderCalibPanel(d, volt){
   $("calibSolTxt").textContent  = "จุ่มหัววัดในน้ำยา " + (BUFFERS[step - 1] || "–");
   $("calibVolt").textContent    = volt === null ? "–" : volt.toFixed(3);
 
-  const st = $("calibStab");
+  const st  = $("calibStab");
+  const bar = $("calibBar");
+
+  const dwell      = Number(d.calibDwellSec)   || 0;
+  const stableSec  = Number(d.calibStableSec)  || 0;
+  const needDwell  = Number(d.calibNeedDwell)  || 30;
+  const needStable = Number(d.calibNeedStable) || 10;
+
   if (volt === null) {
     st.className = "calib-stab wait";
     st.textContent = "⚠️ อ่านแรงดันไม่ได้ — ตรวจสายเซนเซอร์";
-  } else if (d.phStable) {
-    st.className = "calib-stab ok";
-    st.textContent = "✓ ค่านิ่งแล้ว — กดเก็บได้เลย";
-  } else {
+    bar.style.width = "0";
+  } else if (!d.phStable) {
     st.className = "calib-stab wait";
-    st.textContent = "⏳ ยังไม่นิ่ง รออีกสักครู่…";
+    st.textContent = "⏳ ค่ายังไม่นิ่ง กำลังรอ…";
+    bar.style.width = "0";
+  } else if (dwell < needDwell) {
+    // นิ่งแล้วแต่ยังอยู่ในขั้นนี้ไม่นานพอ กันเก็บตอนหัววัดยังอยู่ในน้ำล้าง
+    st.className = "calib-stab wait";
+    st.textContent = "✓ นิ่งแล้ว · รอครบเวลาจุ่ม " + dwell + "/" + needDwell + " วิ";
+    bar.style.width = Math.min(100, dwell / needDwell * 100) + "%";
+  } else {
+    st.className = "calib-stab ok";
+    st.textContent = stableSec >= needStable
+      ? "✓ กำลังเก็บค่า…"
+      : "✓ นิ่งต่อเนื่อง " + stableSec + "/" + needStable + " วิ แล้วจะเก็บให้เอง";
+    bar.style.width = Math.min(100, stableSec / needStable * 100) + "%";
   }
 }
 
